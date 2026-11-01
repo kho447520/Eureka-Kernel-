@@ -7,7 +7,7 @@ on:
 env:
   KERNEL_BRANCH: R24U
   KSU_NEXT_REF: next          # nhánh chính xác của KernelSU-Next
-  KSU_NEXT_TAG: "3.4.2"            # có thể điền tag/commit để reproducible
+  KSU_NEXT_TAG: "v3.4.2"            # có thể điền tag/commit để reproducible
 
 jobs:
   build:
