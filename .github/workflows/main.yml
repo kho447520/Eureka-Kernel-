@@ -33,14 +33,14 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-
-      - - name:Setup KernelSUNext
+          
+      - name: 'Setup KSU Next'
         working-directory: ./kernel
-   run: |
-    set -x
-    curl -LSs "https://github.com/KernelSU-Next/KernelSU-Next" | bash -s legacy
-    echo "=== KernelSU-Next version ==="
-    cd KernelSU-Next && git describe --tags && cd ..
+        run: |
+         set -x
+         curl -LSs "https://github.com/KernelSU-Next/KernelSU-Next" | bash -s legacy
+         echo "=== KernelSU-Next version ==="
+         cd KernelSU-Next && git describe --tags && cd ..
     
       - name: Clean previous build
         working-directory: ./kernel
