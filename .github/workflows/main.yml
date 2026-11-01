@@ -202,6 +202,10 @@ jobs:
 
           echo "=== Verify patches ==="
           grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c
+
+          # =========================================================
+          # PHẦN 4: TOOLCHAIN (nặng, tải Neutron)
+          # =========================================================
       
           - name: Setup Neutron Clang
           run: |
@@ -224,9 +228,9 @@ jobs:
             echo "ARCH=arm64"
           } >> $GITHUB_ENV
 
-      # =========================================================
-      # PHẦN 5: CONFIGURE + BUILD (nặng nhất)
-      # =========================================================
+        # =========================================================
+        # PHẦN 5: CONFIGURE + BUILD (nặng nhất)
+        # =========================================================
       - name: Clean previous build
         working-directory: ./kernel
         run: rm -rf out
