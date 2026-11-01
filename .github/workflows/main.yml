@@ -38,7 +38,7 @@ jobs:
         working-directory: ./kernel
         run: |
           set -x
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          curl -LSs "https://github.com/KernelSU-Next/KernelSU-Next" | bash -s legacy
           echo "=== KernelSU-Next version ==="
           cd KernelSU-Next && git describe --tags && cd ..
 
