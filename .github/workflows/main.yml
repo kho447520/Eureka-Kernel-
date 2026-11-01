@@ -1,11 +1,11 @@
-name: Build R15-OneUI + BPF merge from R24U
+name: Build R24U + KernelSU-Next (Manual Hook)
 on:
   workflow_dispatch:
   push:
-    branches: [ R15-Next ]
+    branches: [ R24U ]
 
 env:
-  KERNEL_BRANCH: R15-Next
+  KERNEL_BRANCH: R24U
 
 jobs:
   build:
@@ -34,41 +34,13 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      - name: Setup KernelSUNext
+      - name: Setup KernelSUNext (legacy)
         working-directory: ./kernel
-        run: curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.0.0
-
-      - name: Verify KernelSU integration mode
-        working-directory: ./kernel
-        run: |
-          echo "=== ksu_handle_* in KernelSU-Next/ ==="
-          grep -rn "ksu_handle_faccessat" KernelSU-Next/ 2>/dev/null | head -5 || echo "Not found"
-          echo "=== ksu_handle_* in fs/open.c ==="
-          grep -n "ksu_handle_faccessat" fs/open.c 2>/dev/null || echo "Not in fs/open.c"
-          echo "=== KSU Kconfig ==="
-          grep -A3 "config KSU" KernelSU-Next/Kconfig 2>/dev/null | head -30
+        run: curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
       - name: Clean previous build
         working-directory: ./kernel
         run: rm -rf out
-
-      - name: Enable KernelSU in defconfig (KPROBES mode)
-        working-directory: ./kernel
-        run: |
-          DEFCONFIG=arch/arm64/configs/${{ matrix.defconfig }}
-          sed -i '/^CONFIG_KSU/d' $DEFCONFIG
-          sed -i '/^# CONFIG_KSU/d' $DEFCONFIG
-          sed -i '/^CONFIG_KPROBES/d' $DEFCONFIG
-          sed -i '/^CONFIG_KPROBE_EVENTS/d' $DEFCONFIG
-          sed -i '/^CONFIG_HAVE_KPROBES/d' $DEFCONFIG
-          echo "CONFIG_KALLSYMS=y" >> $DEFCONFIG
-          echo "CONFIG_KALLSYMS_ALL=y" >> $DEFCONFIG
-          echo "CONFIG_KSU=y" >> $DEFCONFIG
-          echo "CONFIG_KPROBES=y" >> $DEFCONFIG
-          echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_KPROBE_HOOKS=y" >> $DEFCONFIG
-          echo "=== Defconfig tail ==="
-          tail -15 $DEFCONFIG
 
       - name: Install build dependencies
         run: |
