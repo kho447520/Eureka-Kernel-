@@ -34,14 +34,15 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           
-      - name: 'Setup KSU Next'
+      - name: Setup KSU Next
         working-directory: ./kernel
         run: |
          set -x
          curl -LSs "https://github.com/KernelSU-Next/KernelSU-Next" | bash -s legacy
          echo "=== KernelSU-Next version ==="
          cd KernelSU-Next && git describe --tags && cd ..
-    
+         line 7: `<!DOCTYPE html>'
+         
       - name: Clean previous build
         working-directory: ./kernel
         run: rm -rf out
