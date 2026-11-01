@@ -1,4 +1,4 @@
-name: Build Exynos7885 + KernelSU-Next v1.1.1 Manual Hook (GSI)
+name: Build Exynos7885 + KernelSU-Next v1.1.1 Manual Hook (GSI 11/13)
 on:
   workflow_dispatch:
   push:
@@ -8,7 +8,7 @@ env:
   KERNEL_BRANCH: R24U
   KSU_NEXT_REF: next
   KSU_NEXT_TAG: "v1.1.1"
-  LOCALVERSION: "HaubaiEureka"
+  LOCALVERSION: "-HaubaiEureka"
 
 jobs:
   build:
@@ -38,7 +38,7 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      - name: Setup KernelSU-Next (v1.1.1)
+      - name: Setup KernelSU-Next v1.1.1
         working-directory: ./kernel
         run: |
           set -eux
@@ -62,9 +62,67 @@ jobs:
             exit 1
           fi
 
+      - name: Check KSU hook signatures
+        working-directory: ./kernel
+        run: |
+          echo "=== KSU hook signatures ==="
+          grep -rn "ksu_handle_execveat\|ksu_handle_faccessat\|ksu_handle_vfs_read\|ksu_handle_stat\|ksu_handle_sys_reboot" \
+            KernelSU-Next/kernel/ 2>/dev/null | head -30 || echo "Hook signatures not found"
+
       - name: Clean previous build
         working-directory: ./kernel
         run: rm -rf out
+
+      # ===== TÌM VÀ SỬA LOCALVERSION TẬN GỐC =====
+      - name: Find hardcoded LOCALVERSION
+        working-directory: ./kernel
+        run: |
+          echo "=== Makefile top-level ==="
+          grep -n "LOCALVERSION\|Eureka\|R24U" Makefile 2>/dev/null | head -20 || true
+          echo "=== Build scripts ==="
+          grep -rn "LOCALVERSION\|Eureka\|R24U" build.config* *.sh scripts/ 2>/dev/null | head -30 || true
+          echo "=== defconfig ==="
+          grep -n "CONFIG_LOCALVERSION" arch/arm64/configs/*.config arch/arm64/configs/*defconfig 2>/dev/null | head -20 || true
+
+      - name: Patch LOCALVERSION (Makefile + defconfig + scripts)
+        working-directory: ./kernel
+        run: |
+          set -eux
+
+          # --- A) Makefile top-level: xóa mọi dòng LOCALVERSION cũ, thêm mới sau EXTRAVERSION ---
+          if grep -q "^LOCALVERSION[[:space:]]*=" Makefile; then
+            echo "Found LOCALVERSION in Makefile, patching..."
+            sed -i '/^LOCALVERSION[[:space:]]*=/d' Makefile
+          fi
+          if ! grep -q "^LOCALVERSION[[:space:]]*=" Makefile; then
+            sed -i '/^EXTRAVERSION[[:space:]]*=/a LOCALVERSION = -HaubaiEureka' Makefile
+          fi
+          echo "--- Makefile after patch ---"
+          grep -n "^LOCALVERSION\|^EXTRAVERSION\|^VERSION\|^PATCHLEVEL\|^SUBLEVEL" Makefile
+
+          # --- B) defconfig: xóa CONFIG_LOCALVERSION cũ, thêm mới ---
+          for f in arch/arm64/configs/exynos7885-*.config arch/arm64/configs/exynos7885-*defconfig; do
+            [ -f "$f" ] || continue
+            if grep -q "^CONFIG_LOCALVERSION" "$f"; then
+              echo "Found CONFIG_LOCALVERSION in $f, replacing..."
+              sed -i '/^CONFIG_LOCALVERSION=/d' "$f"
+            fi
+            echo 'CONFIG_LOCALVERSION="-HaubaiEureka"' >> "$f"
+          done
+          echo "--- defconfig after patch ---"
+          grep -n "CONFIG_LOCALVERSION" arch/arm64/configs/exynos7885-* 2>/dev/null || true
+
+          # --- C) Script build (nếu có) tự export LOCALVERSION ---
+          grep -rln "LOCALVERSION" --include="*.sh" . 2>/dev/null | while read f; do
+            echo "Patching script $f"
+            sed -i 's/LOCALVERSION=-[^ "]*/LOCALVERSION=-HaubaiEureka/g' "$f" || true
+          done
+
+          # --- D) Loại bỏ mọi dấu vết Eureka/R24U còn sót trong Makefile ---
+          sed -i 's/-Eureka_R24U/-HaubaiEureka/g; s/Eureka_R24U/HaubaiEureka/g' Makefile || true
+
+          echo "=== Final LOCALVERSION check ==="
+          grep -n "LOCALVERSION\|Eureka\|R24U" Makefile 2>/dev/null | head -10 || true
 
       - name: Patch kernel source for Manual Hook
         working-directory: ./kernel
@@ -74,16 +132,16 @@ jobs:
           EXEC_FILE="fs/exec.c"
           if ! grep -q "ksu_handle_execveat" "$EXEC_FILE"; then
             sed -i '/^int do_execve(struct filename \*filename,/i\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
-          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
                                 void *argv, void *envp, int *flags);\
-          #endif\
-           ' "$EXEC_FILE"
+#endif\
+' "$EXEC_FILE"
             sed -i '/^int do_execve(struct filename \*filename,/,/^{/ {
               /^{/a\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
-          ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\
-          #endif
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\
+#endif
             }' "$EXEC_FILE"
           fi
 
@@ -91,9 +149,9 @@ jobs:
           if ! grep -q "ksu_handle_faccessat" "$OPEN_FILE"; then
             sed -i '/^SYSCALL_DEFINE3(faccessat,/,/^{/ {
               /^{/a\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
-          ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
-          #endif
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+#endif
             }' "$OPEN_FILE"
           fi
 
@@ -101,9 +159,9 @@ jobs:
           if ! grep -q "ksu_handle_vfs_read" "$READ_FILE"; then
             sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/,/^{/ {
               /^{/a\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
-          ksu_handle_vfs_read(&file, &buf, &count, &pos);\
-          #endif
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_vfs_read(&file, &buf, &count, &pos);\
+#endif
             }' "$READ_FILE"
           fi
 
@@ -111,9 +169,9 @@ jobs:
           if ! grep -q "ksu_handle_stat" "$STAT_FILE"; then
             sed -i '/^SYSCALL_DEFINE4(newfstatat,/,/^{/ {
               /^{/a\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
-          ksu_handle_stat(&dfd, &filename, &statbuf, &flag);\
-          #endif
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_stat(&dfd, &filename, &statbuf, &flag);\
+#endif
             }' "$STAT_FILE"
           fi
 
@@ -121,9 +179,9 @@ jobs:
           if ! grep -q "ksu_handle_sys_reboot" "$REBOOT_FILE"; then
             sed -i '/^SYSCALL_DEFINE4(reboot,/,/^{/ {
               /^{/a\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
-          ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
-          #endif
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
+#endif
             }' "$REBOOT_FILE"
           fi
 
@@ -163,25 +221,36 @@ jobs:
           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r ${{ matrix.defconfig }}
 
           cat >> out/.config <<'EOF'
-          CONFIG_KSU=y
-          CONFIG_KSU_MANUAL_HOOK=y
-          # CONFIG_KSU_KPROBE_HOOKS is not set
-          # CONFIG_KPROBES is not set
-          CONFIG_LTO_NONE=y
-          EOF
+CONFIG_KSU=y
+CONFIG_KSU_MANUAL_HOOK=y
+# CONFIG_KSU_KPROBE_HOOKS is not set
+# CONFIG_KPROBES is not set
+CONFIG_LTO_NONE=y
+CONFIG_LOCALVERSION="-HaubaiEureka"
+EOF
 
           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r olddefconfig
 
-          echo "=== Verify KSU config ==="
-          grep -E "CONFIG_KSU|CONFIG_LTO" out/.config || true
+          echo "=== Verify KSU + LOCALVERSION config ==="
+          grep -E "CONFIG_KSU|CONFIG_LTO|CONFIG_LOCALVERSION" out/.config || true
+
+      - name: Verify LOCALVERSION before build
+        working-directory: ./kernel
+        run: |
+          echo "=== LOCALVERSION in .config ==="
+          grep "CONFIG_LOCALVERSION" out/.config || echo "(không có trong .config)"
+          echo "=== LOCALVERSION in Makefile ==="
+          grep -n "^LOCALVERSION\|^EXTRAVERSION" Makefile || true
+          echo "=== Expected kernel.release components ==="
+          grep -E "^VERSION|^PATCHLEVEL|^SUBLEVEL|^EXTRAVERSION|^LOCALVERSION" Makefile
 
       - name: Build kernel
         working-directory: ./kernel
         run: |
           export PLATFORM_VERSION=11
           set -o pipefail
+          # KHÔNG truyền LOCALVERSION=... ở đây nữa, vì đã sửa tận gốc
           make -j$(nproc) O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r \
-            LOCALVERSION="${LOCALVERSION}" \
             CC=${CC} LD=${LD} AR=${AR} NM=${NM} \
             OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} STRIP=${STRIP} \
             CROSS_COMPILE=${CROSS_COMPILE} 2>&1 | tee build.log
@@ -190,8 +259,8 @@ jobs:
         if: always()
         working-directory: ./kernel
         run: |
-          [ -f out/include/config/kernel.release ] && cat out/include/config/kernel.release || true
-          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "HaubaiEureka" || true
+          [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
+          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "4.4.302" || true
           echo "=== DTB artifacts ==="
           find out/arch/arm64/boot -maxdepth 3 \( -name "*.dtb" -o -name "*.dtbo" -o -name "dtb.img" -o -name "*.dtb.img" \) 2>/dev/null | sort || true
 
@@ -211,7 +280,6 @@ jobs:
           cp -r kernel/kernel_zip/anykernel anykernel
           cd anykernel
 
-          # --- Kernel image ---
           if   [ -f "../$BOOTDIR/Image.gz-dtb" ]; then
             cp "../$BOOTDIR/Image.gz-dtb" .
           elif [ -f "../$BOOTDIR/Image.gz" ]; then
@@ -223,30 +291,21 @@ jobs:
             exit 1
           fi
 
-          # --- DTB / DTBO: thu thập mọi file liên quan ---
           mkdir -p dtb dtbo
-
-          # 1) File dtb.img / dtbo.img trực tiếp trong boot/
           [ -f "../$BOOTDIR/dtb.img" ]  && cp "../$BOOTDIR/dtb.img"  ./dtb/  || true
           [ -f "../$BOOTDIR/dtbo.img" ] && cp "../$BOOTDIR/dtbo.img" ./dtbo/ || true
-
-          # 2) Các file .dtb / .dtbo rời (kernel có thể sinh ra nhiều biến thể)
           find "../$BOOTDIR" -maxdepth 4 -name "*.dtb"  -exec cp {} ./dtb/  \; 2>/dev/null || true
           find "../$BOOTDIR" -maxdepth 4 -name "*.dtbo" -exec cp {} ./dtbo/ \; 2>/dev/null || true
-
-          # 3) Fallback: tìm trong out/ nếu boot/ không có
           if [ -z "$(ls -A dtb 2>/dev/null)" ]; then
             find ../kernel/out -name "*.dtb" -exec cp {} ./dtb/ \; 2>/dev/null || true
           fi
           if [ -z "$(ls -A dtbo 2>/dev/null)" ]; then
             find ../kernel/out -name "*.dtbo" -exec cp {} ./dtbo/ \; 2>/dev/null || true
           fi
-
-          # Loại bỏ thư mục rỗng để gọn zip
           rmdir dtb 2>/dev/null || true
           rmdir dtbo 2>/dev/null || true
 
-          echo "=== Nội dung anykernel trước khi zip ==="
+          echo "=== anykernel contents ==="
           find . -maxdepth 2 -type f | sort
 
           zip -r9 "../HaubaiKernel_${{ matrix.defconfig }}.zip" *
