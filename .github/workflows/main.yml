@@ -6,6 +6,8 @@ on:
 
 env:
   KERNEL_BRANCH: R24U
+  KSU_NEXT_REF: next          # nhánh chính xác của KernelSU-Next
+  KSU_NEXT_TAG: "3.4.2"            # có thể điền tag/commit để reproducible
 
 jobs:
   build:
@@ -35,23 +37,28 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      - name: Setup KSU Next
+      - name: Setup KernelSU-Next
         working-directory: ./kernel
         run: |
           set -eux
           git submodule sync --recursive || true
           git submodule update --init --recursive --progress || true
+
+          REF="${KSU_NEXT_REF}"
+          if [ -n "${KSU_NEXT_TAG}" ]; then
+            REF="${KSU_NEXT_TAG}"
+          fi
+          echo "Using KernelSU-Next ref: ${REF}"
+
           curl -fL --retry 3 --retry-delay 2 \
-            https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh \
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${REF}/kernel/setup.sh" \
             -o /tmp/ksu_setup.sh
           chmod +x /tmp/ksu_setup.sh
-          /tmp/ksu_setup.sh
+          bash /tmp/ksu_setup.sh "${REF}"
 
           echo "=== KernelSU-Next version ==="
           if [ -d KernelSU-Next ]; then
-            cd KernelSU-Next
-            git describe --tags || git rev-parse --short HEAD
-            cd ..
+            ( cd KernelSU-Next && git describe --tags 2>/dev/null || git rev-parse --short HEAD )
           else
             echo "KernelSU-Next directory not present after setup"
             ls -la
@@ -62,30 +69,41 @@ jobs:
         working-directory: ./kernel
         run: rm -rf out
 
-      - name: Patch DTS for GSI
+      - name: Patch DTS for GSI audio
         working-directory: ./kernel
         run: |
           set -x
           FOUND=0
-          for f in $(grep -rl "codec,cod3035x\|cod3035x" arch/arm64/boot/dts/exynos/ 2>/dev/null); do
+          for f in $(grep -rl "codec,cod3035x" arch/arm64/boot/dts/exynos/ 2>/dev/null); do
             echo "=== Checking $f ==="
             if grep -q "eureka_kernel_variant" "$f"; then
-              echo "Found eureka_kernel_variant in $f, replacing with 3"
               sed -i 's/eureka_kernel_variant = <[0-9]*>/eureka_kernel_variant = <3>/g' "$f"
               FOUND=1
             else
-              if grep -q "codec,cod3035x" "$f"; then
-                echo "Adding eureka_kernel_variant = <3> to $f"
-                sed -i '/compatible = "codec,cod3035x"/a\		eureka_kernel_variant = <3>;' "$f"
-                FOUND=1
-              fi
+              sed -i '/compatible = "codec,cod3035x"/a\\t\teureka_kernel_variant = <3>;' "$f"
+              FOUND=1
             fi
           done
           if [ "$FOUND" = "0" ]; then
-            echo "WARNING: No cod3035x DTS found, audio fix may not apply"
+            echo "::warning::No cod3035x DTS found, audio fix may not apply"
           fi
-          echo "=== Verify ==="
+          echo "=== Verify DTS ==="
           grep -rn "eureka_kernel_variant" arch/arm64/boot/dts/exynos/ | head -20
+
+      - name: Verify cod3035x driver supports eureka_kernel_variant
+        working-directory: ./kernel
+        run: |
+          DRV=$(grep -rl "cod3035x" sound/soc/codecs/ 2>/dev/null | head -1 || true)
+          if [ -z "$DRV" ]; then
+            echo "::warning::cod3035x driver not found under sound/soc/codecs/"
+            exit 0
+          fi
+          echo "Driver: $DRV"
+          if ! grep -q "eureka_kernel_variant" "$DRV"; then
+            echo "::warning::Driver $DRV does not parse eureka_kernel_variant — GSI audio fix may be a no-op"
+          else
+            echo "Driver reads eureka_kernel_variant — OK"
+          fi
 
       - name: Install build dependencies
         run: |
@@ -103,15 +121,17 @@ jobs:
 
       - name: Set environment
         run: |
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "LD=ld.lld" >> $GITHUB_ENV
-          echo "AR=llvm-ar" >> $GITHUB_ENV
-          echo "NM=llvm-nm" >> $GITHUB_ENV
-          echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
-          echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
-          echo "STRIP=llvm-strip" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "ARCH=arm64" >> $GITHUB_ENV
+          {
+            echo "CC=clang"
+            echo "LD=ld.lld"
+            echo "AR=llvm-ar"
+            echo "NM=llvm-nm"
+            echo "OBJCOPY=llvm-objcopy"
+            echo "OBJDUMP=llvm-objdump"
+            echo "STRIP=llvm-strip"
+            echo "CROSS_COMPILE=aarch64-linux-gnu-"
+            echo "ARCH=arm64"
+          } >> $GITHUB_ENV
 
       - name: Configure kernel
         working-directory: ./kernel
@@ -119,10 +139,21 @@ jobs:
           export PLATFORM_VERSION=11
           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r ${{ matrix.defconfig }}
 
+          # Ensure KernelSU is enabled
+          if ! grep -q "^CONFIG_KSU=y" out/.config; then
+            echo "CONFIG_KSU=y" >> out/.config
+            echo "Enabled CONFIG_KSU in out/.config"
+          fi
+
+          # Re-run olddefconfig to resolve dependencies
+          make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r olddefconfig
+          grep -E "^CONFIG_KSU" out/.config || true
+
       - name: Build kernel
         working-directory: ./kernel
         run: |
           export PLATFORM_VERSION=11
+          set -o pipefail
           make -j$(nproc) O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r \
             CC=${CC} LD=${LD} AR=${AR} NM=${NM} \
             OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} STRIP=${STRIP} \
@@ -134,17 +165,31 @@ jobs:
         with:
           name: build-log-${{ matrix.defconfig }}
           path: kernel/build.log
+          if-no-files-found: warn
 
       - name: Package flashable zip
         if: success()
         run: |
+          BOOTDIR=kernel/out/arch/arm64/boot
+          echo "=== Boot artifacts ==="
+          ls -la "$BOOTDIR" || true
+
           cp -r kernel/kernel_zip/anykernel anykernel
           cd anykernel
-          cp ../kernel/out/arch/arm64/boot/Image.gz-dtb . 2>/dev/null || \
-            cp ../kernel/out/arch/arm64/boot/Image.gz . 2>/dev/null || \
-            cp ../kernel/out/arch/arm64/boot/Image . 2>/dev/null || \
-            { echo "ERROR: No kernel image found"; exit 1; }
-          zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
+
+          if   [ -f "../$BOOTDIR/Image.gz-dtb" ]; then cp "../$BOOTDIR/Image.gz-dtb" .
+          elif [ -f "../$BOOTDIR/Image.gz" ];     then cp "../$BOOTDIR/Image.gz" .
+          elif [ -f "../$BOOTDIR/Image" ];        then cp "../$BOOTDIR/Image" .
+          else
+            echo "::error::No kernel image found in $BOOTDIR"
+            exit 1
+          fi
+
+          # Sao chép dtb/dtbo nếu AnyKernel script cần
+          if [ -f "../$BOOTDIR/dtb" ];      then cp "../$BOOTDIR/dtb" .; fi
+          if [ -f "../$BOOTDIR/dtbo.img" ]; then cp "../$BOOTDIR/dtbo.img" .; fi
+
+          zip -r9 "../HaubaiKernel_${{ matrix.defconfig }}.zip" *
           cd ..
 
       - name: Upload zip
@@ -153,3 +198,4 @@ jobs:
         with:
           name: HaubaiKernel_${{ matrix.defconfig }}
           path: HaubaiKernel_${{ matrix.defconfig }}.zip
+          if-no-files-found: warn
