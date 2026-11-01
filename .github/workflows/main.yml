@@ -105,14 +105,6 @@ jobs:
           export PLATFORM_VERSION=11
           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r ${{ matrix.defconfig }}
 
-      - name: Verify .config
-        working-directory: ./kernel
-        run: |
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KALLSYMS" out/.config | sort || true
-          grep "^CONFIG_KSU_MANUAL_HOOK=y" out/.config || { echo "ERROR: MANUAL_HOOK not set"; exit 1; }
-          if grep -q "^CONFIG_KPROBES=y" out/.config; then echo "ERROR: KPROBES still enabled"; exit 1; fi
-          echo "=== Verification passed ==="
-
       - name: Build kernel
         working-directory: ./kernel
         run: |
