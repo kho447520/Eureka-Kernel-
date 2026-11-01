@@ -1,4 +1,4 @@
-name: Build Exynos7885 + KernelSU-Next + GSI Audio Fix
+name: Build Exynos7885 + KernelSU-Next v1.1.1 Manual Hook (GSI)
 on:
   workflow_dispatch:
   push:
@@ -7,9 +7,9 @@ on:
 env:
   KERNEL_BRANCH: R24U
   KSU_NEXT_REF: next
-  KSU_NEXT_TAG: "v1.1.1"      # Chuyển từ v3.4.2 sang v1.1.1
-  LOCALVERSION: "-HaubaiEureka"
-  
+  KSU_NEXT_TAG: "v1.1.1"
+  LOCALVERSION: "HaubaiEureka"
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -38,17 +38,14 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      - name: Setup KernelSU-Next
+      - name: Setup KernelSU-Next (v1.1.1)
         working-directory: ./kernel
         run: |
           set -eux
           git submodule sync --recursive || true
           git submodule update --init --recursive --progress || true
 
-          REF="${KSU_NEXT_REF}"
-          if [ -n "${KSU_NEXT_TAG}" ]; then
-            REF="${KSU_NEXT_TAG}"
-          fi
+          REF="${KSU_NEXT_TAG:-$KSU_NEXT_REF}"
           echo "Using KernelSU-Next ref: ${REF}"
 
           curl -fL --retry 3 --retry-delay 2 \
@@ -62,7 +59,6 @@ jobs:
             ( cd KernelSU-Next && git describe --tags 2>/dev/null || git rev-parse --short HEAD )
           else
             echo "KernelSU-Next directory not present after setup"
-            ls -la
             exit 1
           fi
 
@@ -70,41 +66,69 @@ jobs:
         working-directory: ./kernel
         run: rm -rf out
 
-      - name: Patch DTS for GSI audio
+      - name: Patch kernel source for Manual Hook
         working-directory: ./kernel
         run: |
-          set -x
-          FOUND=0
-          for f in $(grep -rl "codec,cod3035x" arch/arm64/boot/dts/exynos/ 2>/dev/null); do
-            echo "=== Checking $f ==="
-            if grep -q "eureka_kernel_variant" "$f"; then
-              sed -i 's/eureka_kernel_variant = <[0-9]*>/eureka_kernel_variant = <3>/g' "$f"
-              FOUND=1
-            else
-              sed -i '/compatible = "codec,cod3035x"/a\\t\teureka_kernel_variant = <3>;' "$f"
-              FOUND=1
-            fi
-          done
-          if [ "$FOUND" = "0" ]; then
-            echo "::warning::No cod3035x DTS found, audio fix may not apply"
-          fi
-          echo "=== Verify DTS ==="
-          grep -rn "eureka_kernel_variant" arch/arm64/boot/dts/exynos/ | head -20
+          set -eux
 
-      - name: Verify cod3035x driver supports eureka_kernel_variant
-        working-directory: ./kernel
-        run: |
-          DRV=$(grep -rl "cod3035x" sound/soc/codecs/ 2>/dev/null | head -1 || true)
-          if [ -z "$DRV" ]; then
-            echo "::warning::cod3035x driver not found under sound/soc/codecs/"
-            exit 0
+          EXEC_FILE="fs/exec.c"
+          if ! grep -q "ksu_handle_execveat" "$EXEC_FILE"; then
+            sed -i '/^int do_execve(struct filename \*filename,/i\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
+                                void *argv, void *envp, int *flags);\
+#endif\
+' "$EXEC_FILE"
+            sed -i '/^int do_execve(struct filename \*filename,/,/^{/ {
+              /^{/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\
+#endif
+            }' "$EXEC_FILE"
           fi
-          echo "Driver: $DRV"
-          if ! grep -q "eureka_kernel_variant" "$DRV"; then
-            echo "::warning::Driver $DRV does not parse eureka_kernel_variant — GSI audio fix may be a no-op"
-          else
-            echo "Driver reads eureka_kernel_variant — OK"
+
+          OPEN_FILE="fs/open.c"
+          if ! grep -q "ksu_handle_faccessat" "$OPEN_FILE"; then
+            sed -i '/^SYSCALL_DEFINE3(faccessat,/,/^{/ {
+              /^{/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+#endif
+            }' "$OPEN_FILE"
           fi
+
+          READ_FILE="fs/read_write.c"
+          if ! grep -q "ksu_handle_vfs_read" "$READ_FILE"; then
+            sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/,/^{/ {
+              /^{/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_vfs_read(&file, &buf, &count, &pos);\
+#endif
+            }' "$READ_FILE"
+          fi
+
+          STAT_FILE="fs/stat.c"
+          if ! grep -q "ksu_handle_stat" "$STAT_FILE"; then
+            sed -i '/^SYSCALL_DEFINE4(newfstatat,/,/^{/ {
+              /^{/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_stat(&dfd, &filename, &statbuf, &flag);\
+#endif
+            }' "$STAT_FILE"
+          fi
+
+          REBOOT_FILE="kernel/reboot.c"
+          if ! grep -q "ksu_handle_sys_reboot" "$REBOOT_FILE"; then
+            sed -i '/^SYSCALL_DEFINE4(reboot,/,/^{/ {
+              /^{/a\
+#ifdef CONFIG_KSU_MANUAL_HOOK\
+    ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
+#endif
+            }' "$REBOOT_FILE"
+          fi
+
+          echo "=== Verify patches ==="
+          grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c
 
       - name: Install build dependencies
         run: |
@@ -113,12 +137,10 @@ jobs:
 
       - name: Setup Neutron Clang
         run: |
-          mkdir -p toolchain
-          cd toolchain
+          mkdir -p toolchain && cd toolchain
           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
-          cd ..
-          echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
+          cd .. && echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
 
       - name: Set environment
         run: |
@@ -134,21 +156,24 @@ jobs:
             echo "ARCH=arm64"
           } >> $GITHUB_ENV
 
-      - name: Configure kernel
+      - name: Configure kernel (Manual Hook + no LTO)
         working-directory: ./kernel
         run: |
           export PLATFORM_VERSION=11
           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r ${{ matrix.defconfig }}
 
-          # Ensure KernelSU is enabled
-          if ! grep -q "^CONFIG_KSU=y" out/.config; then
-            echo "CONFIG_KSU=y" >> out/.config
-            echo "Enabled CONFIG_KSU in out/.config"
-          fi
+          cat >> out/.config <<'EOF'
+CONFIG_KSU=y
+CONFIG_KSU_MANUAL_HOOK=y
+# CONFIG_KSU_KPROBE_HOOKS is not set
+# CONFIG_KPROBES is not set
+CONFIG_LTO_NONE=y
+EOF
 
-          # Re-run olddefconfig to resolve dependencies
           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r olddefconfig
-          grep -E "^CONFIG_KSU" out/.config || true
+
+          echo "=== Verify KSU config ==="
+          grep -E "CONFIG_KSU|CONFIG_LTO" out/.config || true
 
       - name: Build kernel
         working-directory: ./kernel
@@ -156,9 +181,19 @@ jobs:
           export PLATFORM_VERSION=11
           set -o pipefail
           make -j$(nproc) O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r \
+            LOCALVERSION="${LOCALVERSION}" \
             CC=${CC} LD=${LD} AR=${AR} NM=${NM} \
             OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} STRIP=${STRIP} \
             CROSS_COMPILE=${CROSS_COMPILE} 2>&1 | tee build.log
+
+      - name: Show kernel version & DTB artifacts
+        if: always()
+        working-directory: ./kernel
+        run: |
+          [ -f out/include/config/kernel.release ] && cat out/include/config/kernel.release || true
+          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "HaubaiEureka" || true
+          echo "=== DTB artifacts ==="
+          find out/arch/arm64/boot -maxdepth 3 \( -name "*.dtb" -o -name "*.dtbo" -o -name "dtb.img" -o -name "*.dtb.img" \) 2>/dev/null | sort || true
 
       - name: Upload build log
         if: always()
@@ -171,24 +206,48 @@ jobs:
       - name: Package flashable zip
         if: success()
         run: |
+          set -eux
           BOOTDIR=kernel/out/arch/arm64/boot
-          echo "=== Boot artifacts ==="
-          ls -la "$BOOTDIR" || true
-
           cp -r kernel/kernel_zip/anykernel anykernel
           cd anykernel
 
-          if   [ -f "../$BOOTDIR/Image.gz-dtb" ]; then cp "../$BOOTDIR/Image.gz-dtb" .
-          elif [ -f "../$BOOTDIR/Image.gz" ];     then cp "../$BOOTDIR/Image.gz" .
-          elif [ -f "../$BOOTDIR/Image" ];        then cp "../$BOOTDIR/Image" .
+          # --- Kernel image ---
+          if   [ -f "../$BOOTDIR/Image.gz-dtb" ]; then
+            cp "../$BOOTDIR/Image.gz-dtb" .
+          elif [ -f "../$BOOTDIR/Image.gz" ]; then
+            cp "../$BOOTDIR/Image.gz" .
+          elif [ -f "../$BOOTDIR/Image" ]; then
+            cp "../$BOOTDIR/Image" .
           else
             echo "::error::No kernel image found in $BOOTDIR"
             exit 1
           fi
 
-          # Sao chép dtb/dtbo nếu AnyKernel script cần
-          if [ -f "../$BOOTDIR/dtb" ];      then cp "../$BOOTDIR/dtb" .; fi
-          if [ -f "../$BOOTDIR/dtbo.img" ]; then cp "../$BOOTDIR/dtbo.img" .; fi
+          # --- DTB / DTBO: thu thập mọi file liên quan ---
+          mkdir -p dtb dtbo
+
+          # 1) File dtb.img / dtbo.img trực tiếp trong boot/
+          [ -f "../$BOOTDIR/dtb.img" ]  && cp "../$BOOTDIR/dtb.img"  ./dtb/  || true
+          [ -f "../$BOOTDIR/dtbo.img" ] && cp "../$BOOTDIR/dtbo.img" ./dtbo/ || true
+
+          # 2) Các file .dtb / .dtbo rời (kernel có thể sinh ra nhiều biến thể)
+          find "../$BOOTDIR" -maxdepth 4 -name "*.dtb"  -exec cp {} ./dtb/  \; 2>/dev/null || true
+          find "../$BOOTDIR" -maxdepth 4 -name "*.dtbo" -exec cp {} ./dtbo/ \; 2>/dev/null || true
+
+          # 3) Fallback: tìm trong out/ nếu boot/ không có
+          if [ -z "$(ls -A dtb 2>/dev/null)" ]; then
+            find ../kernel/out -name "*.dtb" -exec cp {} ./dtb/ \; 2>/dev/null || true
+          fi
+          if [ -z "$(ls -A dtbo 2>/dev/null)" ]; then
+            find ../kernel/out -name "*.dtbo" -exec cp {} ./dtbo/ \; 2>/dev/null || true
+          fi
+
+          # Loại bỏ thư mục rỗng để gọn zip
+          rmdir dtb 2>/dev/null || true
+          rmdir dtbo 2>/dev/null || true
+
+          echo "=== Nội dung anykernel trước khi zip ==="
+          find . -maxdepth 2 -type f | sort
 
           zip -r9 "../HaubaiKernel_${{ matrix.defconfig }}.zip" *
           cd ..
