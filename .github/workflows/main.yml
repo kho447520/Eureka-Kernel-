@@ -21,54 +21,54 @@ jobs:
           - exynos7885-a40_defconfig
 
     steps:
-        - name: Checkout kernel source
-          uses: actions/checkout@v4
-          with:
-           ref: ${{ env.KERNEL_BRANCH }}
-           path: kernel
-           fetch-depth: 0
-           submodules: recursive
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.KERNEL_BRANCH }}
+          path: kernel
+          fetch-depth: 0
+          submodules: recursive
 
-        - name: Set Git user
-          working-directory: ./kernel
-          run: |
-           git config user.name "github-actions"
-           git config user.email "github-actions@github.com"
-           
-        - name: Setup KSU Next
-          working-directory: ./kernel
-          run: |
-           set -eux
-           git submodule sync --recursive || true
-           git submodule update --init --recursive --progress || true
-            curl -fL --retry 3 --retry-delay 2 \
-            https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh \
+      - name: Set Git user
+        working-directory: ./kernel
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Setup KSU Next
+        working-directory: ./kernel
+        run: |
+          set -eux
+          git submodule sync --recursive || true
+          git submodule update --init --recursive --progress || true
+          curl -fL --retry 3 --retry-delay 2 \
+            https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/scripts/setup.sh \
             -o /tmp/ksu_setup.sh
-           chmod +x /tmp/ksu_setup.sh
-           /tmp/ksu_setup.sh
+          chmod +x /tmp/ksu_setup.sh
+          /tmp/ksu_setup.sh
 
-           echo "=== KernelSU-Next version ==="
-           if [ -d KernelSU-Next ]; then
+          echo "=== KernelSU-Next version ==="
+          if [ -d KernelSU-Next ]; then
             cd KernelSU-Next
             git describe --tags || git rev-parse --short HEAD
             cd ..
-           else
+          else
             echo "KernelSU-Next directory not present after setup"
             ls -la
             exit 1
-            fi
-          
-        - name: Clean previous build
-          working-directory: ./kernel
-          run: rm -rf out
-        
-        - name: Patch DTS for GSI
-          working-directory: ./kernel
-          run: |
-           set -x
-           FOUND=0
-           for f in $(grep -rl "codec,cod3035x\|cod3035x" arch/arm64/boot/dts/exynos/ 2>/dev/null); do
-             echo "=== Checking $f ==="
+          fi
+
+      - name: Clean previous build
+        working-directory: ./kernel
+        run: rm -rf out
+
+      - name: Patch DTS for GSI
+        working-directory: ./kernel
+        run: |
+          set -x
+          FOUND=0
+          for f in $(grep -rl "codec,cod3035x\|cod3035x" arch/arm64/boot/dts/exynos/ 2>/dev/null); do
+            echo "=== Checking $f ==="
             if grep -q "eureka_kernel_variant" "$f"; then
               echo "Found eureka_kernel_variant in $f, replacing with 3"
               sed -i 's/eureka_kernel_variant = <[0-9]*>/eureka_kernel_variant = <3>/g' "$f"
@@ -80,77 +80,76 @@ jobs:
                 FOUND=1
               fi
             fi
-           done
-           if [ "$FOUND" = "0" ]; then
+          done
+          if [ "$FOUND" = "0" ]; then
             echo "WARNING: No cod3035x DTS found, audio fix may not apply"
-           fi
-           echo "=== Verify ==="
-           grep -rn "eureka_kernel_variant" arch/arm64/boot/dts/exynos/ | head -20
+          fi
+          echo "=== Verify ==="
+          grep -rn "eureka_kernel_variant" arch/arm64/boot/dts/exynos/ | head -20
 
-        - name: Install build dependencies
-          run: |
-           sudo apt update
-           sudo apt install -y bc bison flex libssl-dev make git python3 cpio gcc-aarch64-linux-gnu zip
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y bc bison flex libssl-dev make git python3 cpio gcc-aarch64-linux-gnu zip
 
-           - name: Setup Neutron Clang
-           run: |
-           mkdir -p toolchain
-           cd toolchain 
-           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
-           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
-           cd ..
-           echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
+      - name: Setup Neutron Clang
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
+          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
+          cd ..
+          echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
 
-           - name: Set environment
-           run: |
-           echo "CC=clang" >> $GITHUB_ENV
-           echo "LD=ld.lld" >> $GITHUB_ENV
-           echo "AR=llvm-ar" >> $GITHUB_ENV
-           echo "NM=llvm-nm" >> $GITHUB_ENV
-           echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
-           echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
-           echo "STRIP=llvm-strip" >> $GITHUB_ENV
-           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-           echo "ARCH=arm64" >> $GITHUB_ENV
+      - name: Set environment
+        run: |
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "LD=ld.lld" >> $GITHUB_ENV
+          echo "AR=llvm-ar" >> $GITHUB_ENV
+          echo "NM=llvm-nm" >> $GITHUB_ENV
+          echo "OBJCOPY=llvm-objcopy" >> $GITHUB_ENV
+          echo "OBJDUMP=llvm-objdump" >> $GITHUB_ENV
+          echo "STRIP=llvm-strip" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "ARCH=arm64" >> $GITHUB_ENV
 
-           - name: Configure kernel
-           working-directory: ./kernel
-           run: |
-           export PLATFORM_VERSION=11
-           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r ${{ matrix.defconfig }}
+      - name: Configure kernel
+        working-directory: ./kernel
+        run: |
+          export PLATFORM_VERSION=11
+          make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r ${{ matrix.defconfig }}
 
-           - name: Build kernel
-           working-directory: ./kernel
-           run: |
-           export PLATFORM_VERSION=11
-           make -j$(nproc) O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r \
+      - name: Build kernel
+        working-directory: ./kernel
+        run: |
+          export PLATFORM_VERSION=11
+          make -j$(nproc) O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r \
             CC=${CC} LD=${LD} AR=${AR} NM=${NM} \
             OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} STRIP=${STRIP} \
             CROSS_COMPILE=${CROSS_COMPILE} 2>&1 | tee build.log
 
-           - name: Upload build log
-           if: always()
-           uses: actions/upload-artifact@v4
-           with:
-           name: build-log-${{ matrix.defconfig }}
-           path: kernel/build.log
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.defconfig }}
+          path: kernel/build.log
 
-        - name: Package flashable zip
-          if: success()
-          run: |
-           cp -r kernel/kernel_zip/anykernel anykernel
-           cd anykernel
-           cp ../kernel/out/arch/arm64/boot/Image.gz-dtb . 2>/dev/null || \
-           cp ../kernel/out/arch/arm64/boot/Image.gz . 2>/dev/null || \
-           cp ../kernel/out/arch/arm64/boot/Image . 2>/dev/null || \
-           { echo "ERROR: No kernel image found"; exit 1; }
-           zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
-           cd ..
+      - name: Package flashable zip
+        if: success()
+        run: |
+          cp -r kernel/kernel_zip/anykernel anykernel
+          cd anykernel
+          cp ../kernel/out/arch/arm64/boot/Image.gz-dtb . 2>/dev/null || \
+            cp ../kernel/out/arch/arm64/boot/Image.gz . 2>/dev/null || \
+            cp ../kernel/out/arch/arm64/boot/Image . 2>/dev/null || \
+            { echo "ERROR: No kernel image found"; exit 1; }
+          zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
+          cd ..
 
-            - name: Upload zip
-            if: success()
-            uses: actions/upload-artifact@v4
-            with:
-            name: HaubaiKernel_${{ matrix.defconfig }}
-            path: HaubaiKernel_${{ matrix.defconfig }}.zip
- 
+      - name: Upload zip
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HaubaiKernel_${{ matrix.defconfig }}
+          path: HaubaiKernel_${{ matrix.defconfig }}.zip
