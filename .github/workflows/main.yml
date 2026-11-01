@@ -42,7 +42,7 @@ jobs:
           git submodule sync --recursive || true
           git submodule update --init --recursive --progress || true
           curl -fL --retry 3 --retry-delay 2 \
-            https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/scripts/setup.sh \
+            https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh \
             -o /tmp/ksu_setup.sh
           chmod +x /tmp/ksu_setup.sh
           /tmp/ksu_setup.sh
