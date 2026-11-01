@@ -37,11 +37,12 @@ jobs:
       - name: Setup KSU Next
         working-directory: ./kernel
         run: |
-         set -x
-         curl -LSs "https://github.com/KernelSU-Next/KernelSU-Next" | bash -s legacy
+         set -eux
+         curl -LSs https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh -o /tmp/ksu_setup.sh
+         chmod +x /tmp/ksu_setup.sh
+         /tmp/ksu_setup.sh
          echo "=== KernelSU-Next version ==="
          cd KernelSU-Next && git describe --tags && cd ..
-         line 7: `<!DOCTYPE html>'
          
       - name: Clean previous build
         working-directory: ./kernel
