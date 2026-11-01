@@ -2,10 +2,10 @@ name: Build R15-OneUI + BPF merge from R24U
 on:
   workflow_dispatch:
   push:
-    branches: [ testing ]
+    branches: [ R15-OneUI ]
 
 env:
-  KERNEL_BRANCH: testing
+  KERNEL_BRANCH: R15-OneUI
 
 jobs:
   build:
@@ -38,7 +38,6 @@ jobs:
         working-directory: ./kernel
         run: curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.0.0
 
-      # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
       - name: Apply KernelSU manual hooks via Coccinelle
         working-directory: ./kernel
         run: |
@@ -47,7 +46,14 @@ jobs:
           git clone https://github.com/devnoname120/kernelsu-coccinelle.git /tmp/ksu-cocci
           cd /tmp/ksu-cocci/classic-hooks
           ./apply.sh ${{ github.workspace }}/kernel
-      # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+      - name: Verify hooks applied
+        working-directory: ./kernel
+        run: |
+          echo "=== Checking KernelSU hooks ==="
+          grep -n "ksu_handle_faccessat" fs/open.c || echo "WARNING: faccessat hook missing"
+          grep -n "ksu_handle_vfs_read" fs/read_write.c || echo "WARNING: vfs_read hook missing"
+          grep -n "ksu_handle_execveat" fs/exec.c || echo "WARNING: execve hook missing"
 
       - name: Enable KernelSU in defconfig
         working-directory: ./kernel
