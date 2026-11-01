@@ -132,16 +132,16 @@ jobs:
           EXEC_FILE="fs/exec.c"
           if ! grep -q "ksu_handle_execveat" "$EXEC_FILE"; then
             sed -i '/^int do_execve(struct filename \*filename,/i\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
                                 void *argv, void *envp, int *flags);\
-#endif\
-' "$EXEC_FILE"
+            #endif\
+            ' "$EXEC_FILE"
             sed -i '/^int do_execve(struct filename \*filename,/,/^{/ {
               /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-    ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\
-#endif
+            #ifdef CONFIG_KSU_MANUAL_HOOK\
+            ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\
+            #endif
             }' "$EXEC_FILE"
           fi
 
@@ -149,9 +149,9 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
           if ! grep -q "ksu_handle_faccessat" "$OPEN_FILE"; then
             sed -i '/^SYSCALL_DEFINE3(faccessat,/,/^{/ {
               /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-    ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
-#endif
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+          #endif
             }' "$OPEN_FILE"
           fi
 
@@ -159,19 +159,19 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
           if ! grep -q "ksu_handle_vfs_read" "$READ_FILE"; then
             sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/,/^{/ {
               /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-    ksu_handle_vfs_read(&file, &buf, &count, &pos);\
-#endif
-            }' "$READ_FILE"
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          ksu_handle_vfs_read(&file, &buf, &count, &pos);\
+          #endif
+             }' "$READ_FILE"
           fi
 
           STAT_FILE="fs/stat.c"
           if ! grep -q "ksu_handle_stat" "$STAT_FILE"; then
             sed -i '/^SYSCALL_DEFINE4(newfstatat,/,/^{/ {
               /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-    ksu_handle_stat(&dfd, &filename, &statbuf, &flag);\
-#endif
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          ksu_handle_stat(&dfd, &filename, &statbuf, &flag);\
+          #endif
             }' "$STAT_FILE"
           fi
 
@@ -179,9 +179,9 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
           if ! grep -q "ksu_handle_sys_reboot" "$REBOOT_FILE"; then
             sed -i '/^SYSCALL_DEFINE4(reboot,/,/^{/ {
               /^{/a\
-#ifdef CONFIG_KSU_MANUAL_HOOK\
-    ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
-#endif
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
+          #endif
             }' "$REBOOT_FILE"
           fi
 
@@ -221,13 +221,13 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r ${{ matrix.defconfig }}
 
           cat >> out/.config <<'EOF'
-CONFIG_KSU=y
-CONFIG_KSU_MANUAL_HOOK=y
-# CONFIG_KSU_KPROBE_HOOKS is not set
-# CONFIG_KPROBES is not set
-CONFIG_LTO_NONE=y
-CONFIG_LOCALVERSION="-HaubaiEureka"
-EOF
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+          # CONFIG_KSU_KPROBE_HOOKS is not set
+          # CONFIG_KPROBES is not set
+          CONFIG_LTO_NONE=y
+          CONFIG_LOCALVERSION="-HaubaiEureka"
+          EOF
 
           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r olddefconfig
 
