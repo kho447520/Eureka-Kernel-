@@ -1,4 +1,4 @@
-name: Build JackpotLTE + KernelSU-Next + GSI Audio Fix
+name: Build Exynos7885 + KernelSU-Next + GSI Audio Fix
 on:
   workflow_dispatch:
   push:
@@ -14,7 +14,11 @@ jobs:
       fail-fast: false
       matrix:
         defconfig:
-          - exynos7885-jackpotlte_defconfig
+          - exynos7885-a10_defconfig
+          - exynos7885-a20_defconfig
+          - exynos7885-a30_defconfig
+          - exynos7885-a30s_defconfig
+          - exynos7885-a40_defconfig
 
     steps:
       - name: Checkout kernel source
@@ -71,7 +75,6 @@ jobs:
         working-directory: ./kernel
         run: |
           set -x
-          # Tìm tất cả file DTS/DTSI có node cod3035x
           FOUND=0
           for f in $(grep -rl "codec,cod3035x\|cod3035x" arch/arm64/boot/dts/exynos/ 2>/dev/null); do
             echo "=== Checking $f ==="
@@ -80,10 +83,8 @@ jobs:
               sed -i 's/eureka_kernel_variant = <[0-9]*>/eureka_kernel_variant = <3>/g' "$f"
               FOUND=1
             else
-              # Chỉ patch file có node codec,cod3035x
               if grep -q "codec,cod3035x" "$f"; then
                 echo "Adding eureka_kernel_variant = <3> to $f"
-                # Chèn sau dòng compatible = "codec,cod3035x"
                 sed -i '/compatible = "codec,cod3035x"/a\		eureka_kernel_variant = <3>;' "$f"
                 FOUND=1
               fi
@@ -160,12 +161,12 @@ jobs:
           cp ../kernel/out/arch/arm64/boot/Image.gz . 2>/dev/null || \
           cp ../kernel/out/arch/arm64/boot/Image . 2>/dev/null || \
           { echo "ERROR: No kernel image found"; exit 1; }
-          zip -r9 ../HaubaiKernel_jackpotlte_${{ matrix.defconfig }}.zip *
+          zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
           cd ..
 
       - name: Upload zip
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: HaubaiKernel_jackpotlte_${{ matrix.defconfig }}
-          path: HaubaiKernel_jackpotlte_${{ matrix.defconfig }}.zip
+          name: HaubaiKernel_${{ matrix.defconfig }}
+          path: HaubaiKernel_${{ matrix.defconfig }}.zip
