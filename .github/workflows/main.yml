@@ -1,4 +1,4 @@
-name: Build Exynos7885 + KernelSU-Next v1.1.1 Manual Hook (GSI 11/13)
+name: Build Exynos7885 + KernelSU-Next v1.1.1 Manual Hook (GSI)
 on:
   workflow_dispatch:
   push:
@@ -8,6 +8,7 @@ env:
   KERNEL_BRANCH: R24U
   KSU_NEXT_REF: next
   KSU_NEXT_TAG: "v1.1.1"
+  KSU_VERSION_OVERRIDE: "12851"
   LOCALVERSION: "-HaubaiEureka"
 
 jobs:
@@ -24,6 +25,9 @@ jobs:
           - exynos7885-a40_defconfig
 
     steps:
+      # =========================================================
+      # PHẦN 1: CHUẨN BỊ NHANH (source, tool, kiểm tra sớm)
+      # =========================================================
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -38,6 +42,14 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
+      - name: Install build dependencies (nhanh, cache-friendly)
+        run: |
+          sudo apt update
+          sudo apt install -y bc bison flex libssl-dev make git python3 cpio gcc-aarch64-linux-gnu zip
+
+      # =========================================================
+      # PHẦN 2: KERNELSU-NEXT + KIỂM TRA SỚM (rẻ, phát hiện lỗi ngay)
+      # =========================================================
       - name: Setup KernelSU-Next v1.1.1
         working-directory: ./kernel
         run: |
@@ -54,7 +66,6 @@ jobs:
           chmod +x /tmp/ksu_setup.sh
           bash /tmp/ksu_setup.sh "${REF}"
 
-          echo "=== KernelSU-Next version ==="
           if [ -d KernelSU-Next ]; then
             ( cd KernelSU-Next && git describe --tags 2>/dev/null || git rev-parse --short HEAD )
           else
@@ -62,18 +73,37 @@ jobs:
             exit 1
           fi
 
-      - name: Check KSU hook signatures
+      - name: Check KSU hook signatures (sớm)
         working-directory: ./kernel
         run: |
           echo "=== KSU hook signatures ==="
           grep -rn "ksu_handle_execveat\|ksu_handle_faccessat\|ksu_handle_vfs_read\|ksu_handle_stat\|ksu_handle_sys_reboot" \
             KernelSU-Next/kernel/ 2>/dev/null | head -30 || echo "Hook signatures not found"
 
-      - name: Clean previous build
+      - name: Patch KernelSU version number
         working-directory: ./kernel
-        run: rm -rf out
+        run: |
+          set -eux
+          TARGET_VERSION="${KSU_VERSION_OVERRIDE:-12851}"
+          echo "Target KSU_VERSION = ${TARGET_VERSION}"
 
-      # ===== TÌM VÀ SỬA LOCALVERSION TẬN GỐC =====
+          echo "=== Before patch ==="
+          grep -rn "KSU_VERSION" KernelSU-Next/kernel/ | head -20 || true
+
+          find KernelSU-Next -type f \( -name "*.h" -o -name "*.c" -o -name "Kbuild" -o -name "Makefile" \) \
+            -exec grep -l "KSU_VERSION" {} \; | while read f; do
+              echo "Patching $f"
+              sed -i -E "s/(#define[[:space:]]+KSU_VERSION[[:space:]]+)[0-9]+/\1${TARGET_VERSION}/g" "$f" || true
+              sed -i -E "s/(KSU_VERSION[[:space:]]*=[[:space:]]*)[0-9]+/\1${TARGET_VERSION}/g" "$f" || true
+              sed -i -E "s/(KSU_VERSION[[:space:]]*:=[[:space:]]*)[0-9]+/\1${TARGET_VERSION}/g" "$f" || true
+            done
+
+          echo "=== After patch ==="
+          grep -rn "KSU_VERSION" KernelSU-Next/kernel/ | head -20 || true
+
+      # =========================================================
+      # PHẦN 3: PATCH KERNEL SOURCE (LOCALVERSION + MANUAL HOOK)
+      # =========================================================
       - name: Find hardcoded LOCALVERSION
         working-directory: ./kernel
         run: |
@@ -84,45 +114,30 @@ jobs:
           echo "=== defconfig ==="
           grep -n "CONFIG_LOCALVERSION" arch/arm64/configs/*.config arch/arm64/configs/*defconfig 2>/dev/null | head -20 || true
 
-      - name: Patch LOCALVERSION (Makefile + defconfig + scripts)
+      - name: Patch LOCALVERSION
         working-directory: ./kernel
         run: |
           set -eux
-
-          # --- A) Makefile top-level: xóa mọi dòng LOCALVERSION cũ, thêm mới sau EXTRAVERSION ---
           if grep -q "^LOCALVERSION[[:space:]]*=" Makefile; then
-            echo "Found LOCALVERSION in Makefile, patching..."
             sed -i '/^LOCALVERSION[[:space:]]*=/d' Makefile
           fi
           if ! grep -q "^LOCALVERSION[[:space:]]*=" Makefile; then
             sed -i '/^EXTRAVERSION[[:space:]]*=/a LOCALVERSION = -HaubaiEureka' Makefile
           fi
-          echo "--- Makefile after patch ---"
-          grep -n "^LOCALVERSION\|^EXTRAVERSION\|^VERSION\|^PATCHLEVEL\|^SUBLEVEL" Makefile
 
-          # --- B) defconfig: xóa CONFIG_LOCALVERSION cũ, thêm mới ---
           for f in arch/arm64/configs/exynos7885-*.config arch/arm64/configs/exynos7885-*defconfig; do
             [ -f "$f" ] || continue
             if grep -q "^CONFIG_LOCALVERSION" "$f"; then
-              echo "Found CONFIG_LOCALVERSION in $f, replacing..."
               sed -i '/^CONFIG_LOCALVERSION=/d' "$f"
             fi
             echo 'CONFIG_LOCALVERSION="-HaubaiEureka"' >> "$f"
           done
-          echo "--- defconfig after patch ---"
-          grep -n "CONFIG_LOCALVERSION" arch/arm64/configs/exynos7885-* 2>/dev/null || true
 
-          # --- C) Script build (nếu có) tự export LOCALVERSION ---
           grep -rln "LOCALVERSION" --include="*.sh" . 2>/dev/null | while read f; do
-            echo "Patching script $f"
             sed -i 's/LOCALVERSION=-[^ "]*/LOCALVERSION=-HaubaiEureka/g' "$f" || true
           done
 
-          # --- D) Loại bỏ mọi dấu vết Eureka/R24U còn sót trong Makefile ---
           sed -i 's/-Eureka_R24U/-HaubaiEureka/g; s/Eureka_R24U/HaubaiEureka/g' Makefile || true
-
-          echo "=== Final LOCALVERSION check ==="
-          grep -n "LOCALVERSION\|Eureka\|R24U" Makefile 2>/dev/null | head -10 || true
 
       - name: Patch kernel source for Manual Hook
         working-directory: ./kernel
@@ -132,16 +147,16 @@ jobs:
           EXEC_FILE="fs/exec.c"
           if ! grep -q "ksu_handle_execveat" "$EXEC_FILE"; then
             sed -i '/^int do_execve(struct filename \*filename,/i\
-            #ifdef CONFIG_KSU_MANUAL_HOOK\
-            extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
                                 void *argv, void *envp, int *flags);\
-            #endif\
-            ' "$EXEC_FILE"
+          #endif\
+          ' "$EXEC_FILE"
             sed -i '/^int do_execve(struct filename \*filename,/,/^{/ {
               /^{/a\
-            #ifdef CONFIG_KSU_MANUAL_HOOK\
-            ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\
-            #endif
+          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\
+          #endif
             }' "$EXEC_FILE"
           fi
 
@@ -162,7 +177,7 @@ jobs:
           #ifdef CONFIG_KSU_MANUAL_HOOK\
           ksu_handle_vfs_read(&file, &buf, &count, &pos);\
           #endif
-             }' "$READ_FILE"
+            }' "$READ_FILE"
           fi
 
           STAT_FILE="fs/stat.c"
@@ -187,18 +202,13 @@ jobs:
 
           echo "=== Verify patches ==="
           grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c
-
-      - name: Install build dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y bc bison flex libssl-dev make git python3 cpio gcc-aarch64-linux-gnu zip
-
-      - name: Setup Neutron Clang
-        run: |
-          mkdir -p toolchain && cd toolchain
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
-          cd .. && echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
+      
+          - name: Setup Neutron Clang
+          run: |
+           mkdir -p toolchain && cd toolchain
+           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
+           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
+           cd .. && echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
 
       - name: Set environment
         run: |
@@ -214,6 +224,13 @@ jobs:
             echo "ARCH=arm64"
           } >> $GITHUB_ENV
 
+      # =========================================================
+      # PHẦN 5: CONFIGURE + BUILD (nặng nhất)
+      # =========================================================
+      - name: Clean previous build
+        working-directory: ./kernel
+        run: rm -rf out
+
       - name: Configure kernel (Manual Hook + no LTO)
         working-directory: ./kernel
         run: |
@@ -226,41 +243,35 @@ jobs:
           # CONFIG_KSU_KPROBE_HOOKS is not set
           # CONFIG_KPROBES is not set
           CONFIG_LTO_NONE=y
-          CONFIG_LOCALVERSION="-HaubaiEureka"
+          CONFIG_LOCALVERSION="HaubaiEureka"
           EOF
 
           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r olddefconfig
 
-          echo "=== Verify KSU + LOCALVERSION config ==="
+          echo "=== Verify config ==="
           grep -E "CONFIG_KSU|CONFIG_LTO|CONFIG_LOCALVERSION" out/.config || true
-
-      - name: Verify LOCALVERSION before build
-        working-directory: ./kernel
-        run: |
-          echo "=== LOCALVERSION in .config ==="
-          grep "CONFIG_LOCALVERSION" out/.config || echo "(không có trong .config)"
-          echo "=== LOCALVERSION in Makefile ==="
           grep -n "^LOCALVERSION\|^EXTRAVERSION" Makefile || true
-          echo "=== Expected kernel.release components ==="
-          grep -E "^VERSION|^PATCHLEVEL|^SUBLEVEL|^EXTRAVERSION|^LOCALVERSION" Makefile
 
       - name: Build kernel
         working-directory: ./kernel
         run: |
           export PLATFORM_VERSION=11
           set -o pipefail
-          # KHÔNG truyền LOCALVERSION=... ở đây nữa, vì đã sửa tận gốc
           make -j$(nproc) O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r \
             CC=${CC} LD=${LD} AR=${AR} NM=${NM} \
             OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} STRIP=${STRIP} \
             CROSS_COMPILE=${CROSS_COMPILE} 2>&1 | tee build.log
 
+      # =========================================================
+      # PHẦN 6: VERIFY + ĐÓNG GÓI
+      # =========================================================
       - name: Show kernel version & DTB artifacts
         if: always()
         working-directory: ./kernel
         run: |
           [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
           [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "4.4.302" || true
+          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -i "ksu" | head -5 || true
           echo "=== DTB artifacts ==="
           find out/arch/arm64/boot -maxdepth 3 \( -name "*.dtb" -o -name "*.dtbo" -o -name "dtb.img" -o -name "*.dtb.img" \) 2>/dev/null | sort || true
 
@@ -280,34 +291,22 @@ jobs:
           cp -r kernel/kernel_zip/anykernel anykernel
           cd anykernel
 
-          if   [ -f "../$BOOTDIR/Image.gz-dtb" ]; then
-            cp "../$BOOTDIR/Image.gz-dtb" .
-          elif [ -f "../$BOOTDIR/Image.gz" ]; then
-            cp "../$BOOTDIR/Image.gz" .
-          elif [ -f "../$BOOTDIR/Image" ]; then
-            cp "../$BOOTDIR/Image" .
-          else
-            echo "::error::No kernel image found in $BOOTDIR"
-            exit 1
-          fi
+          if   [ -f "../$BOOTDIR/Image.gz-dtb" ]; then cp "../$BOOTDIR/Image.gz-dtb" .
+          elif [ -f "../$BOOTDIR/Image.gz" ];     then cp "../$BOOTDIR/Image.gz" .
+          elif [ -f "../$BOOTDIR/Image" ];        then cp "../$BOOTDIR/Image" .
+          else echo "::error::No kernel image found"; exit 1; fi
 
           mkdir -p dtb dtbo
           [ -f "../$BOOTDIR/dtb.img" ]  && cp "../$BOOTDIR/dtb.img"  ./dtb/  || true
           [ -f "../$BOOTDIR/dtbo.img" ] && cp "../$BOOTDIR/dtbo.img" ./dtbo/ || true
           find "../$BOOTDIR" -maxdepth 4 -name "*.dtb"  -exec cp {} ./dtb/  \; 2>/dev/null || true
           find "../$BOOTDIR" -maxdepth 4 -name "*.dtbo" -exec cp {} ./dtbo/ \; 2>/dev/null || true
-          if [ -z "$(ls -A dtb 2>/dev/null)" ]; then
-            find ../kernel/out -name "*.dtb" -exec cp {} ./dtb/ \; 2>/dev/null || true
-          fi
-          if [ -z "$(ls -A dtbo 2>/dev/null)" ]; then
-            find ../kernel/out -name "*.dtbo" -exec cp {} ./dtbo/ \; 2>/dev/null || true
-          fi
+          [ -z "$(ls -A dtb 2>/dev/null)" ]  && find ../kernel/out -name "*.dtb"  -exec cp {} ./dtb/  \; 2>/dev/null || true
+          [ -z "$(ls -A dtbo 2>/dev/null)" ] && find ../kernel/out -name "*.dtbo" -exec cp {} ./dtbo/ \; 2>/dev/null || true
           rmdir dtb 2>/dev/null || true
           rmdir dtbo 2>/dev/null || true
 
-          echo "=== anykernel contents ==="
           find . -maxdepth 2 -type f | sort
-
           zip -r9 "../HaubaiKernel_${{ matrix.defconfig }}.zip" *
           cd ..
 
