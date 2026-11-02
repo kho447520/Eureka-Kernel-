@@ -1,4 +1,4 @@
-name: Build Exynos7885 KSU v0.9.5
+name: Build Exynos7885 KSU v0.9.5 (GCC)
 on:
   workflow_dispatch:
   push:
@@ -69,7 +69,7 @@ jobs:
 
           # fs/open.c
           sed -i '/^long do_faccessat/i\
-           #ifdef CONFIG_KSU\
+          #ifdef CONFIG_KSU\
           extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
           #endif' fs/open.c
           sed -i '/^long do_faccessat/,/^{/ { /^{/a\
@@ -104,35 +104,18 @@ jobs:
           grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
 
       # =========================================================
-      # 2b. FIX CLANG ERRORS
+      # 3. ENV (GCC)
       # =========================================================
-      - name: Fix Clang pgtable section attribute error
-        working-directory: ./kernel
-        run: |
-          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
-          echo "=== Verify pgtable.h fix ==="
-          grep -n "zero_pfn" include/asm-generic/pgtable.h | head -5
-
-      # =========================================================
-      # 3. TOOLCHAIN & ENV
-      # =========================================================
-      - name: Setup Neutron Clang
-        run: |
-          mkdir -p toolchain && cd toolchain
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
-          echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Set environment
+      - name: Set environment (GCC)
         run: |
           {
-            echo "CC=clang"
-            echo "LD=ld.lld"
-            echo "AR=llvm-ar"
-            echo "NM=llvm-nm"
-            echo "OBJCOPY=llvm-objcopy"
-            echo "OBJDUMP=llvm-objdump"
-            echo "STRIP=llvm-strip"
+            echo "CC=aarch64-linux-gnu-gcc"
+            echo "LD=aarch64-linux-gnu-ld"
+            echo "AR=aarch64-linux-gnu-ar"
+            echo "NM=aarch64-linux-gnu-nm"
+            echo "OBJCOPY=aarch64-linux-gnu-objcopy"
+            echo "OBJDUMP=aarch64-linux-gnu-objdump"
+            echo "STRIP=aarch64-linux-gnu-strip"
             echo "CROSS_COMPILE=aarch64-linux-gnu-"
             echo "ARCH=arm64"
           } >> $GITHUB_ENV
@@ -140,7 +123,7 @@ jobs:
       # =========================================================
       # 4. BUILD
       # =========================================================
-      - name: Configure & Build kernel
+      - name: Configure & Build kernel (GCC)
         working-directory: ./kernel
         run: |
           export PLATFORM_VERSION=11
@@ -149,7 +132,6 @@ jobs:
           {
             echo "CONFIG_KSU=y"
             echo "# CONFIG_KPROBES is not set"
-            echo "CONFIG_LTO_NONE=y"
             echo 'CONFIG_LOCALVERSION="-Haubai"'
             echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
           } >> out/.config
@@ -157,17 +139,17 @@ jobs:
           make O=out olddefconfig
 
           echo "=== Verify config after olddefconfig ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
 
           make -j$(nproc) O=out \
             ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
+            CC=aarch64-linux-gnu-gcc \
+            LD=aarch64-linux-gnu-ld \
+            AR=aarch64-linux-gnu-ar \
+            NM=aarch64-linux-gnu-nm \
+            OBJCOPY=aarch64-linux-gnu-objcopy \
+            OBJDUMP=aarch64-linux-gnu-objdump \
+            STRIP=aarch64-linux-gnu-strip \
             CROSS_COMPILE=aarch64-linux-gnu- \
             2>&1 | tee build.log
 
