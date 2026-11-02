@@ -22,9 +22,6 @@ jobs:
           - exynos7885-a40_defconfig
 
     steps:
-      # =========================================================
-      # 1. CHECKOUT & DEPENDENCIES
-      # =========================================================
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -38,101 +35,113 @@ jobs:
           sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
             gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler
 
-      # =========================================================
-      # 2. KERNELSU-NEXT + PATCH SOURCE
-      # =========================================================
-      - name: Setup KernelSU-Next v1.1.1 & Patch source
+      - name: Setup KernelSU-Next v1.1.1
         working-directory: ./kernel
         run: |
           git submodule update --init --recursive
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_TAG}/kernel/setup.sh" | bash -s "${KSU_TAG}"
 
-          # --- Patch LOCALVERSION ---
-          sed -i '/^LOCALVERSION[[:space:]]*=/d' Makefile
-          sed -i '/^EXTRAVERSION[[:space:]]*=/a LOCALVERSION = -Haubai' Makefile
-          for f in arch/arm64/configs/exynos7885-*defconfig; do
-            sed -i '/^CONFIG_LOCALVERSION=/d' "$f"
-            echo 'CONFIG_LOCALVERSION="-Haubai"' >> "$f"
-          done
+      - name: Patch LOCALVERSION & Manual Hook (Python)
+        working-directory: ./kernel
+        run: |
+          python3 - <<'PYEOF'
+          import re
 
-          # --- Patch Manual Hook (kèm extern) ---
-          # fs/exec.c
-          sed -i '/^#include <linux\/sched.h>/a\
-          #ifdef CONFIG_KSU\
-          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\
-          #endif' fs/exec.c
-          sed -i '/^static int do_execveat_common(int fd, struct filename \*filename,/,/^{/ { /^{/a\
-          #ifdef CONFIG_KSU\
-          ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\
-          #endif
-          }' fs/exec.c
+          # --- LOCALVERSION ---
+          m = open('Makefile').read()
+          m = re.sub(r'^LOCALVERSION[ \t]*=.*$', '', m, flags=re.M)
+          m = re.sub(r'^(EXTRAVERSION[ \t]*=.*)$', r'\1\nLOCALVERSION = -Haubai', m, count=1, flags=re.M)
+          open('Makefile', 'w').write(m)
 
-          # fs/open.c
-          sed -i '/^long do_faccessat/i\
-          #ifdef CONFIG_KSU\
-          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
-          #endif' fs/open.c
-          sed -i '/^long do_faccessat/,/^{/ { /^{/a\
-          #ifdef CONFIG_KSU\
-          ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
-          #endif
-          }' fs/open.c
+          # --- fs/exec.c ---
+          p = 'fs/exec.c'
+          s = open(p).read()
+          if 'ksu_handle_execveat' not in s:
+              s = s.replace(
+                  '#include <linux/sched.h>',
+                  '#include <linux/sched.h>\n'
+                  '#ifdef CONFIG_KSU\n'
+                  'extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n'
+                  '#endif', 1)
+              s = re.sub(
+                  r'(static int do_execveat_common\(int fd, struct filename \*filename,[^}]*?\{)',
+                  r'\1\n#ifdef CONFIG_KSU\n    ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif',
+                  s, count=1)
+              open(p, 'w').write(s)
 
-          # fs/read_write.c
-          sed -i '/^ssize_t vfs_read/i\
-          #ifdef CONFIG_KSU\
-          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
-          #endif' fs/read_write.c
-          sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/,/^{/ { /^{/a\
-          #ifdef CONFIG_KSU\
-          ksu_handle_vfs_read(&file, &buf, &count, &pos);\
-          #endif
-          }' fs/read_write.c
+          # --- fs/open.c ---
+          p = 'fs/open.c'
+          s = open(p).read()
+          if 'ksu_handle_faccessat' not in s:
+              s = re.sub(
+                  r'(^long do_faccessat\()',
+                  '#ifdef CONFIG_KSU\n'
+                  'extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n'
+                  '#endif\n'
+                  r'\1', s, count=1, flags=re.M)
+              s = re.sub(
+                  r'(long do_faccessat\([^}]*?\{)',
+                  r'\1\n#ifdef CONFIG_KSU\n    ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif',
+                  s, count=1)
+              open(p, 'w').write(s)
 
-          # fs/stat.c
-          sed -i '/^int vfs_statx/i\
-          #ifdef CONFIG_KSU\
-          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, void **statbuf, int *flags);\
-          #endif' fs/stat.c
-          sed -i '/^int vfs_statx/,/^{/ { /^{/a\
-          #ifdef CONFIG_KSU\
-          ksu_handle_stat(&dfd, &filename, &stat, &flags);\
-          #endif
-          }' fs/stat.c
+          # --- fs/read_write.c ---
+          p = 'fs/read_write.c'
+          s = open(p).read()
+          if 'ksu_handle_vfs_read' not in s:
+              s = re.sub(
+                  r'(^ssize_t vfs_read\()',
+                  '#ifdef CONFIG_KSU\n'
+                  'extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n'
+                  '#endif\n'
+                  r'\1', s, count=1, flags=re.M)
+              s = re.sub(
+                  r'(ssize_t vfs_read\([^}]*?\{)',
+                  r'\1\n#ifdef CONFIG_KSU\n    ksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif',
+                  s, count=1)
+              open(p, 'w').write(s)
 
+          # --- fs/stat.c ---
+          p = 'fs/stat.c'
+          s = open(p).read()
+          if 'ksu_handle_stat' not in s:
+              s = re.sub(
+                  r'(^int vfs_statx\()',
+                  '#ifdef CONFIG_KSU\n'
+                  'extern int ksu_handle_stat(int *dfd, const char __user **filename_user, void **statbuf, int *flags);\n'
+                  '#endif\n'
+                  r'\1', s, count=1, flags=re.M)
+              s = re.sub(
+                  r'(int vfs_statx\([^}]*?\{)',
+                  r'\1\n#ifdef CONFIG_KSU\n    ksu_handle_stat(&dfd, &filename, &stat, &flags);\n#endif',
+                  s, count=1)
+              open(p, 'w').write(s)
+
+          print("=== Patches applied ===")
+          PYEOF
           echo "=== Verify patches ==="
-          grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
+          grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c || true
 
-      # =========================================================
-      # 2b. FIX CLANG COMPATIBILITY
-      # =========================================================
       - name: Fix Clang compatibility issues
         working-directory: ./kernel
         run: |
-          # Sửa cờ -implicit-function-declaration
           sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' Makefile
           find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' {} + 2>/dev/null || true
-
-          # Sửa lỗi section attribute trên biến local
-          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
-
-          # Xóa -Werror
+          sed -i 's/-flto=thin//g; s/-flto=full//g; s/-flto=auto//g' Makefile
+          find . -name "Makefile*" -exec sed -i 's/-flto=thin//g' {} + 2>/dev/null || true
           sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
           echo 'HOSTCFLAGS += -Wno-error' >> Makefile
+          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
 
-          echo "=== Verify fixes ==="
-          grep -n "zero_pfn" include/asm-generic/pgtable.h | head -3 || true
-
-      # =========================================================
-      # 3. TOOLCHAIN (AOSP Clang 14 - r450784e)
-      # =========================================================
       - name: Setup AOSP Clang 14 (r450784e)
         run: |
           mkdir -p toolchain && cd toolchain
           curl -fL --retry 3 -o clang.tar.gz \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2022/clang-r450784e.tar.gz"
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r450784e.tar.gz"
           tar -xzf clang.tar.gz && rm clang.tar.gz
-          echo "$(pwd)/bin" >> $GITHUB_PATH
+          CLANG_BIN=$(dirname "$(find . -name ld.lld | head -1)")
+          echo "Found ld.lld in: $CLANG_BIN"
+          echo "$CLANG_BIN" >> $GITHUB_PATH
 
       - name: Set environment (Clang 14)
         run: |
@@ -146,37 +155,44 @@ jobs:
             echo "STRIP=llvm-strip"
             echo "CROSS_COMPILE=aarch64-linux-gnu-"
             echo "ARCH=arm64"
+            echo "HOSTLDFLAGS=-fuse-ld=lld"
           } >> $GITHUB_ENV
 
-      # =========================================================
-      # 4. BUILD
-      # =========================================================
-      - name: Configure & Build kernel (Clang 14)
+      - name: Configure & Build kernel
         working-directory: ./kernel
         run: |
-           rm -rf out
-           export PLATFORM_VERSION=11
-           make O=out ${{ matrix.defconfig }}
-           make O=out olddefconfig
+          rm -rf out
+          export PLATFORM_VERSION=11
+          make O=out ${{ matrix.defconfig }}
+          make O=out olddefconfig
 
-           echo "=== Verify config AFTER olddefconfig ==="
-           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
+          {
+            echo "CONFIG_KSU=y"
+            echo "# CONFIG_KPROBES is not set"
+            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
+            echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
+            echo "# CONFIG_LTO is not set"
+            echo "# CONFIG_LTO_CLANG is not set"
+            echo "# CONFIG_LTO_CLANG_THIN is not set"
+            echo "# CONFIG_THINLTO is not set"
+            echo 'CONFIG_LOCALVERSION="-Haubai"'
+            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
+          } >> out/.config
 
-           make -j$(nproc) O=out \
-           ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
-           OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-           CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee build.log
+          echo "=== Verify config BEFORE build ==="
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
 
-      # =========================================================
-      # 5. PACKAGE & UPLOAD
-      # =========================================================
+          make -j$(nproc) O=out \
+            ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- HOSTLDFLAGS="-fuse-ld=lld" \
+            2>&1 | tee build.log
+
       - name: Show artifacts
         if: always()
         working-directory: ./kernel
         run: |
           [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
-          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "Haubai" || true
-          echo "=== Boot artifacts ==="
           ls -la out/arch/arm64/boot/ || true
 
       - name: Upload build log
@@ -187,20 +203,13 @@ jobs:
           path: kernel/build.log
           if-no-files-found: warn
 
-      - name: Package flashable zip
+      - name: Package zip
         if: success()
         run: |
           cp -r kernel/kernel_zip/anykernel ak && cd ak
-          if [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
-            cp ../kernel/out/arch/arm64/boot/Image.gz .
-            echo "Using Image.gz"
-          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
-            cp ../kernel/out/arch/arm64/boot/Image.gz .
-            echo "::warning::Image.gz not found, using Image.gz"
-          else
-            cp ../kernel/out/arch/arm64/boot/Image .
-            echo "::warning::Image.gz not found, using Image"
-          fi
+          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
+          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then cp ../kernel/out/arch/arm64/boot/Image.gz .
+          else cp ../kernel/out/arch/arm64/boot/Image .; fi
           zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
 
       - name: Upload zip
