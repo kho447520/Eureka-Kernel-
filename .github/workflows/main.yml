@@ -43,18 +43,13 @@ jobs:
 
       - name: Increase swap space to prevent OOM
         run: |
-          # Bỏ qua nếu swap đã tồn tại
           if swapon --show | grep -q "/swapfile"; then
             echo "Swap already enabled, skipping."
             free -h
             exit 0
           fi
-
-          # Dọn dẹp file swap cũ nếu có
           sudo swapoff /swapfile 2>/dev/null || true
           sudo rm -f /swapfile
-
-          # Tạo file swap mới (2GB)
           sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
@@ -71,7 +66,7 @@ jobs:
         working-directory: ./kernel
         run: |
           python3 - <<'PYEOF'
-          import os
+          import os, re
 
           p = 'KernelSU-Next/kernel/throne_tracker.c'
           if not os.path.exists(p):
@@ -79,19 +74,26 @@ jobs:
               exit(0)
 
           s = open(p).read()
-          if 'is_manager_apk' in s and 'extern' not in s.split('is_manager_apk')[0][-100:]:
-              s = s.replace(
-                  'bool is_manager = is_manager_apk(dirpath);',
-                  '#ifdef CONFIG_KSU\n'
-                  'extern bool is_manager_apk(char *path);\n'
-                  '#endif\n'
-                  '            bool is_manager = is_manager_apk(dirpath);'
-              , 1)
-              open(p, 'w').write(s)
-              print("Patched throne_tracker.c: added extern declaration")
+
+          # Nếu đã có extern thì bỏ qua
+          if 'extern bool is_manager_apk' in s:
+              print("Already patched")
+              exit(0)
+
+          # Chèn khai báo extern ngay sau các dòng #include
+          includes = list(re.finditer(r'^#include .*$', s, flags=re.M))
+          if includes:
+              last_include = includes[-1]
+              insert_pos = last_include.end()
+              s = s[:insert_pos] + '\n\n#ifdef CONFIG_KSU\nextern bool is_manager_apk(char *path);\n#endif\n' + s[insert_pos:]
           else:
-              print("throne_tracker.c already patched or pattern not found")
+              s = '#ifdef CONFIG_KSU\nextern bool is_manager_apk(char *path);\n#endif\n' + s
+
+          open(p, 'w').write(s)
+          print("Patched throne_tracker.c: added extern declaration after includes")
           PYEOF
+          echo "=== Verify patch ==="
+          grep -n "is_manager_apk" KernelSU-Next/kernel/throne_tracker.c | head -5
 
       - name: Patch LOCALVERSION & Manual Hook (Python)
         working-directory: ./kernel
@@ -193,8 +195,10 @@ jobs:
       - name: Fix Clang compatibility issues
         working-directory: ./kernel
         run: |
-          sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' Makefile
-          find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' {} + 2>/dev/null || true
+          # XÓA HẲN cờ gây xung đột (thay vì đổi thành -W...)
+          sed -i 's/-implicit-function-declaration//g' Makefile
+          find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} + 2>/dev/null || true
+          
           sed -i 's/-flto=thin//g; s/-flto=full//g; s/-flto=auto//g' Makefile
           find . -name "Makefile*" -exec sed -i 's/-flto=thin//g' {} + 2>/dev/null || true
           sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
