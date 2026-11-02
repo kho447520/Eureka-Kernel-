@@ -47,6 +47,32 @@ jobs:
           git submodule update --init --recursive
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_TAG}/kernel/setup.sh" | bash -s "${KSU_TAG}"
 
+      - name: Fix KernelSU is_manager_apk declaration
+        working-directory: ./kernel
+        run: |
+          python3 - <<'PYEOF'
+          import os
+
+          p = 'KernelSU-Next/kernel/throne_tracker.c'
+          if not os.path.exists(p):
+              print(f"File {p} not found, skipping")
+              exit(0)
+
+          s = open(p).read()
+          if 'is_manager_apk' in s and 'extern' not in s.split('is_manager_apk')[0][-100:]:
+              s = s.replace(
+                  'bool is_manager = is_manager_apk(dirpath);',
+                  '#ifdef CONFIG_KSU\n'
+                  'extern bool is_manager_apk(char *path);\n'
+                  '#endif\n'
+                  '            bool is_manager = is_manager_apk(dirpath);'
+              , 1)
+              open(p, 'w').write(s)
+              print("Patched throne_tracker.c: added extern declaration")
+          else:
+              print("throne_tracker.c already patched or pattern not found")
+          PYEOF
+
       - name: Patch LOCALVERSION & Manual Hook (Python)
         working-directory: ./kernel
         run: |
@@ -138,7 +164,6 @@ jobs:
           sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
           echo 'HOSTCFLAGS += -Wno-error' >> Makefile
           sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
-          # Vá thêm lỗi C23 (bool/true/false) của Clang mới
           echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
 
       - name: Set environment (Ubuntu Clang)
