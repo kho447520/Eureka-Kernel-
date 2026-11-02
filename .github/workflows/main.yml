@@ -57,7 +57,6 @@ jobs:
             echo 'CONFIG_LOCALVERSION="-Haubai"' >> "$f"
           done
 
-          # Sửa LOCALVERSION trong các script build nếu có
           grep -rln "LOCALVERSION" --include="*.sh" . 2>/dev/null | while read f; do
             sed -i 's/LOCALVERSION=-[^ "]*/LOCALVERSION=-Haubai/g' "$f" || true
           done
@@ -116,19 +115,26 @@ jobs:
           grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
 
       # =========================================================
-      # 2b. FIX HOST SCRIPT BUILD (GCC 13/14 trên Ubuntu 24.04)
+      # 2b. FIX GCC FLAGS FOR KERNEL 4.4
       # =========================================================
-      - name: Fix host script build for new GCC
+      - name: Fix GCC flags for kernel 4.4
         working-directory: ./kernel
         run: |
-          # Tắt -Werror toàn cục cho host programs
+          # 1. Sửa cờ -implicit-function-declaration thành -Wimplicit-function-declaration
+          sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' Makefile
+          find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' {} + 2>/dev/null || true
+
+          # 2. Tắt -Werror để tránh GCC mới coi warning là lỗi
+          sed -i 's/-Werror//g' Makefile
           sed -i 's/-Werror//g' scripts/Makefile.host 2>/dev/null || true
-          sed -i 's/-Werror//g' Makefile 2>/dev/null || true
-          # Thêm -Wno-error vào HOSTCFLAGS
+
+          # 3. Thêm -Wno-error cho host programs
           if ! grep -q "HOSTCFLAGS += -Wno-error" Makefile; then
             echo 'HOSTCFLAGS += -Wno-error' >> Makefile
           fi
-          echo "=== HOSTCFLAGS ==="
+
+          echo "=== Verify flags ==="
+          grep -n "implicit-function" Makefile | head -5 || true
           grep -n "HOSTCFLAGS" Makefile | head -5 || true
 
       # =========================================================
@@ -154,12 +160,14 @@ jobs:
       - name: Configure & Build kernel (GCC)
         working-directory: ./kernel
         run: |
+          rm -rf out
           export PLATFORM_VERSION=11
           make O=out ${{ matrix.defconfig }}
 
           {
             echo "CONFIG_KSU=y"
             echo "# CONFIG_KPROBES is not set"
+            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
             echo 'CONFIG_LOCALVERSION="-Haubai"'
             echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
           } >> out/.config
@@ -167,7 +175,7 @@ jobs:
           make O=out olddefconfig
 
           echo "=== Verify config after olddefconfig ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
 
           make -j$(nproc) O=out \
             ARCH=arm64 \
