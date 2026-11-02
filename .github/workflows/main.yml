@@ -186,6 +186,8 @@ jobs:
         run: |
           rm -rf out
           export PLATFORM_VERSION=11
+          
+          # Tắt các driver nặng không cần thiết để giảm tải RAM
           make O=out ${{ matrix.defconfig }}
 
           {
@@ -208,7 +210,8 @@ jobs:
           echo "=== Verify config BEFORE build ==="
           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE|CONFIG_IMG_GZ_DTB" out/.config || true
 
-          make -j$(nproc) O=out \
+          # Đổi -j$(nproc) thành -j2 để tránh OOM (GitHub runner chỉ có 7GB RAM)
+          make -j2 O=out \
             ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             CROSS_COMPILE=aarch64-linux-gnu- HOSTLDFLAGS="-fuse-ld=lld" \
