@@ -154,41 +154,18 @@ jobs:
       - name: Configure & Build kernel (Clang 14)
         working-directory: ./kernel
         run: |
-          rm -rf out
-          export PLATFORM_VERSION=11
-          make O=out ${{ matrix.defconfig }}
+           rm -rf out
+           export PLATFORM_VERSION=11
+           make O=out ${{ matrix.defconfig }}
+           make O=out olddefconfig
 
-          # olddefconfig trước để resolve dependencies
-          make O=out olddefconfig
+           echo "=== Verify config AFTER olddefconfig ==="
+           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
 
-          # Sau đó thêm config (ghi đè kết quả olddefconfig)
-          {
-            echo "CONFIG_KSU=y"
-            echo "# CONFIG_KPROBES is not set"
-            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
-            echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
-            echo "# CONFIG_LTO is not set"
-            echo "# CONFIG_LTO_CLANG is not set"
-            echo "# CONFIG_LTO_CLANG_THIN is not set"
-            echo "# CONFIG_THINLTO is not set"
-            echo 'CONFIG_LOCALVERSION="-Haubai"'
-            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
-          } >> out/.config
-
-          echo "=== Verify config BEFORE build ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
-
-          make -j$(nproc) O=out \
-            ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            2>&1 | tee build.log
+           make -j$(nproc) O=out \
+           ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+           OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+           CROSS_COMPILE=aarch64-linux-gnu- 2>&1 | tee build.log
 
       # =========================================================
       # 5. PACKAGE & UPLOAD
@@ -214,15 +191,15 @@ jobs:
         if: success()
         run: |
           cp -r kernel/kernel_zip/anykernel ak && cd ak
-          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
-            echo "Using Image.gz-dtb (DTB appended)"
+          if [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
+            cp ../kernel/out/arch/arm64/boot/Image.gz .
+            echo "Using Image.gz"
           elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
             cp ../kernel/out/arch/arm64/boot/Image.gz .
-            echo "::warning::Image.gz-dtb not found, using Image.gz"
+            echo "::warning::Image.gz not found, using Image.gz"
           else
             cp ../kernel/out/arch/arm64/boot/Image .
-            echo "::warning::Image.gz-dtb not found, using Image"
+            echo "::warning::Image.gz not found, using Image"
           fi
           zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
 
