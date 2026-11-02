@@ -20,7 +20,7 @@ jobs:
           - exynos7885-a30_defconfig
           - exynos7885-a30s_defconfig
           - exynos7885-a40_defconfig
-          
+
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -33,7 +33,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
-            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler
+            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler aria2
 
       - name: Setup KernelSU-Next v1.1.1
         working-directory: ./kernel
@@ -133,22 +133,25 @@ jobs:
           echo 'HOSTCFLAGS += -Wno-error' >> Makefile
           sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
 
-      # =========================================================
-      # SỬA LỖI TOOLCHAIN: Tải Clang vào /usr/local và symlink
-      # =========================================================
-      - name: Setup AOSP Clang 14 & Fix Linker
+      - name: Setup AOSP Clang 14 (Fast & Stable)
         run: |
-          # 1. Tải Clang
           mkdir -p $HOME/clang && cd $HOME/clang
-          curl -fL --retry 3 -o clang.tar.gz \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r450784e.tar.gz"
-          tar -xzf clang.tar.gz && rm clang.tar.gz
+          aria2c -x 8 -s 8 --retry-wait=3 --max-tries=5 \
+            -o clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r450784e.tar.gz"
 
-          # 2. Copy vào /usr/local/ để có sẵn trong PATH hệ thống
+          if [ ! -s clang.tar.gz ]; then
+            echo "ERROR: clang.tar.gz is empty"
+            exit 1
+          fi
+          ls -lh clang.tar.gz
+
+          tar -xzf clang.tar.gz
+          rm clang.tar.gz
+
           sudo mkdir -p /usr/local/clang14
           sudo cp -r $HOME/clang/* /usr/local/clang14/
 
-          # 3. Symlink các công cụ LLVM vào /usr/bin
           sudo ln -sf /usr/local/clang14/bin/clang /usr/bin/clang
           sudo ln -sf /usr/local/clang14/bin/ld.lld /usr/bin/ld.lld
           sudo ln -sf /usr/local/clang14/bin/llvm-ar /usr/bin/llvm-ar
@@ -156,14 +159,11 @@ jobs:
           sudo ln -sf /usr/local/clang14/bin/llvm-objcopy /usr/bin/llvm-objcopy
           sudo ln -sf /usr/local/clang14/bin/llvm-objdump /usr/bin/llvm-objdump
           sudo ln -sf /usr/local/clang14/bin/llvm-strip /usr/bin/llvm-strip
-
-          # 4. Tạo symlink 'ld' trỏ tới ld.lld để GCC host cũng tìm thấy linker
           sudo ln -sf /usr/bin/ld.lld /usr/bin/ld
           sudo ln -sf /usr/bin/ld.lld /usr/bin/ld.gold
 
-          # 5. Kiểm tra
-          which clang
-          which ld.lld
+          which clang && which ld.lld
+          clang --version
           ld.lld --version
 
       - name: Set environment (Clang 14)
@@ -184,63 +184,64 @@ jobs:
       - name: Configure & Build kernel
         working-directory: ./kernel
         run: |
-         rm -rf out
-         export PLATFORM_VERSION=11
-         make O=out ${{ matrix.defconfig }}   
-         {
-         echo "CONFIG_KSU=y"
-         echo "# CONFIG_KPROBES is not set"
-         echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
-         echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
-         echo "# CONFIG_LTO is not set"
-         echo "# CONFIG_LTO_CLANG is not set"
-         echo "# CONFIG_LTO_CLANG_THIN is not set"
-         echo "# CONFIG_THINLTO is not set"
-         echo 'CONFIG_LOCALVERSION="-Haubai"'
-         echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
-         echo "CONFIG_IMG_GZ_DTB=y"
-         echo "# CONFIG_IMG_DTB is not set"
-         } >> out/.config
+          rm -rf out
+          export PLATFORM_VERSION=11
+          make O=out ${{ matrix.defconfig }}
 
-         make O=out olddefconfig
+          {
+            echo "CONFIG_KSU=y"
+            echo "# CONFIG_KPROBES is not set"
+            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
+            echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
+            echo "# CONFIG_LTO is not set"
+            echo "# CONFIG_LTO_CLANG is not set"
+            echo "# CONFIG_LTO_CLANG_THIN is not set"
+            echo "# CONFIG_THINLTO is not set"
+            echo 'CONFIG_LOCALVERSION="-Haubai"'
+            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
+            echo "CONFIG_IMG_GZ_DTB=y"
+            echo "# CONFIG_IMG_DTB is not set"
+          } >> out/.config
 
-         echo "=== Verify config BEFORE build ==="
-         grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE|CONFIG_IMG_GZ_DTB" out/.config || true
+          make O=out olddefconfig
 
-         make -j$(nproc) O=out \
-         ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
-         OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-         CROSS_COMPILE=aarch64-linux-gnu- HOSTLDFLAGS="-fuse-ld=lld" \
-         2>&1 | tee build.log
-         
-         - name: Show artifacts
-           if: always()
-           working-directory: ./kernel
-           run: |
-              [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
-              ls -la out/arch/arm64/boot/ || true
+          echo "=== Verify config BEFORE build ==="
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE|CONFIG_IMG_GZ_DTB" out/.config || true
 
-         - name: Upload build log
-           if: always()
-           uses: actions/upload-artifact@v4
-           with:
-           name: build-log-${{ matrix.defconfig }}
-           path: kernel/build.log
-           if-no-files-found: warn
+          make -j$(nproc) O=out \
+            ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- HOSTLDFLAGS="-fuse-ld=lld" \
+            2>&1 | tee build.log
 
-         - name: Package zip
-           if: success()
-           run: |
-              cp -r kernel/kernel_zip/anykernel ak && cd ak
-              if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
-              elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then cp ../kernel/out/arch/arm64/boot/Image.gz .
-              else cp ../kernel/out/arch/arm64/boot/Image .; fi
-              zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
+      - name: Show artifacts
+        if: always()
+        working-directory: ./kernel
+        run: |
+          [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
+          ls -la out/arch/arm64/boot/ || true
 
-         - name: Upload zip
-           if: success()
-           uses: actions/upload-artifact@v4
-           with:
-           name: HaubaiKernel_${{ matrix.defconfig }}
-           path: HaubaiKernel_${{ matrix.defconfig }}.zip
-           if-no-files-found: warn
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.defconfig }}
+          path: kernel/build.log
+          if-no-files-found: warn
+
+      - name: Package zip
+        if: success()
+        run: |
+          cp -r kernel/kernel_zip/anykernel ak && cd ak
+          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
+          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then cp ../kernel/out/arch/arm64/boot/Image.gz .
+          else cp ../kernel/out/arch/arm64/boot/Image .; fi
+          zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
+
+      - name: Upload zip
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HaubaiKernel_${{ matrix.defconfig }}
+          path: HaubaiKernel_${{ matrix.defconfig }}.zip
+          if-no-files-found: warn
