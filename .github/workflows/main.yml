@@ -111,6 +111,19 @@ jobs:
           #endif
           }' kernel/reboot.c
 
+          echo "=== Verify patches ==="
+          grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c
+
+      # =========================================================
+      # 2b. FIX CLANG ERRORS
+      # =========================================================
+      - name: Fix Clang pgtable section attribute error
+        working-directory: ./kernel
+        run: |
+          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
+          echo "=== Verify pgtable.h fix ==="
+          grep -n "zero_pfn" include/asm-generic/pgtable.h | head -5
+
       # =========================================================
       # 3. TOOLCHAIN & ENV
       # =========================================================
@@ -144,20 +157,33 @@ jobs:
           export PLATFORM_VERSION=11
           make O=out ${{ matrix.defconfig }}
 
-          cat >> out/.config <<EOF
-          CONFIG_KSU=y
-          # CONFIG_KPROBES is not set
-          CONFIG_LTO_NONE=y
-          CONFIG_LOCALVERSION="-Haubai"
-          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
-          EOF
+          {
+            echo "CONFIG_KSU=y"
+            echo "# CONFIG_KPROBES is not set"
+            echo "CONFIG_LTO_NONE=y"
+            echo 'CONFIG_LOCALVERSION="-Haubai"'
+            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
+          } >> out/.config
 
           make O=out olddefconfig
+
+          echo "=== Verify config after olddefconfig ==="
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
+
           make -j$(nproc) O=out 2>&1 | tee build.log
 
       # =========================================================
       # 5. PACKAGE & UPLOAD
       # =========================================================
+      - name: Show kernel version & artifacts
+        if: always()
+        working-directory: ./kernel
+        run: |
+          [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
+          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "Haubai" || true
+          echo "=== Boot artifacts ==="
+          ls -la out/arch/arm64/boot/ || true
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
@@ -172,10 +198,13 @@ jobs:
           cp -r kernel/kernel_zip/anykernel ak && cd ak
           if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
+            echo "Using Image.gz-dtb (DTB appended)"
           elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
             cp ../kernel/out/arch/arm64/boot/Image.gz .
+            echo "::warning::Image.gz-dtb not found, using Image.gz"
           else
             cp ../kernel/out/arch/arm64/boot/Image .
+            echo "::warning::Image.gz-dtb not found, using Image"
           fi
           zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
 
