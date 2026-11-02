@@ -133,15 +133,38 @@ jobs:
           echo 'HOSTCFLAGS += -Wno-error' >> Makefile
           sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
 
-      - name: Setup AOSP Clang 14 (r450784e)
+      # =========================================================
+      # SỬA LỖI TOOLCHAIN: Tải Clang vào /usr/local và symlink
+      # =========================================================
+      - name: Setup AOSP Clang 14 & Fix Linker
         run: |
-          mkdir -p toolchain && cd toolchain
+          # 1. Tải Clang
+          mkdir -p $HOME/clang && cd $HOME/clang
           curl -fL --retry 3 -o clang.tar.gz \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r1/clang-r450784e.tar.gz"
           tar -xzf clang.tar.gz && rm clang.tar.gz
-          CLANG_BIN=$(dirname "$(find . -name ld.lld | head -1)")
-          echo "Found ld.lld in: $CLANG_BIN"
-          echo "$CLANG_BIN" >> $GITHUB_PATH
+
+          # 2. Copy vào /usr/local/ để có sẵn trong PATH hệ thống
+          sudo mkdir -p /usr/local/clang14
+          sudo cp -r $HOME/clang/* /usr/local/clang14/
+
+          # 3. Symlink các công cụ LLVM vào /usr/bin
+          sudo ln -sf /usr/local/clang14/bin/clang /usr/bin/clang
+          sudo ln -sf /usr/local/clang14/bin/ld.lld /usr/bin/ld.lld
+          sudo ln -sf /usr/local/clang14/bin/llvm-ar /usr/bin/llvm-ar
+          sudo ln -sf /usr/local/clang14/bin/llvm-nm /usr/bin/llvm-nm
+          sudo ln -sf /usr/local/clang14/bin/llvm-objcopy /usr/bin/llvm-objcopy
+          sudo ln -sf /usr/local/clang14/bin/llvm-objdump /usr/bin/llvm-objdump
+          sudo ln -sf /usr/local/clang14/bin/llvm-strip /usr/bin/llvm-strip
+
+          # 4. Tạo symlink 'ld' trỏ tới ld.lld để GCC host cũng tìm thấy linker
+          sudo ln -sf /usr/bin/ld.lld /usr/bin/ld
+          sudo ln -sf /usr/bin/ld.lld /usr/bin/ld.gold
+
+          # 5. Kiểm tra
+          which clang
+          which ld.lld
+          ld.lld --version
 
       - name: Set environment (Clang 14)
         run: |
