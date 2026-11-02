@@ -1,13 +1,10 @@
-name: Build Exynos7885 KSU-Next (Minimal)
+name: Build Exynos7885 KSU-Next (R15-Next)
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - R15-Next
 
 env:
   KSU_TAG: "v1.1.1"
-  LOCALVERSION: "-Haubai"
+  LOCALVERSION: "-Haubai-R15"
 
 jobs:
   build:
@@ -17,21 +14,53 @@ jobs:
       matrix:
         defconfig:
           - exynos7885-a10_defconfig
+          - exynos7885-a20_defconfig
           - exynos7885-a30_defconfig
+          - exynos7885-a30s_defconfig
+          - exynos7885-a40_defconfig
 
     steps:
-      - name: Checkout kernel source
+      - name: Checkout kernel source (R15-Next)
         uses: actions/checkout@v4
         with:
-          ref: R24U
+          repository: eurekadevelopment/Eureka-Kernel-Exynos7885-Q-R-S
+          ref: R15-Next
           path: kernel
           submodules: recursive
 
-      - name: Install GCC
+      - name: Install build dependencies
         run: |
           sudo apt update
           sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
-            gcc-aarch64-linux-gnu zip
+            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler aria2
+
+      - name: Setup Clang 14 (Vortex/Proton)
+        run: |
+          mkdir -p $HOME/clang && cd $HOME/clang
+          # Tải Proton Clang 13 (ổn định cho kernel 4.4)
+          aria2c -x 8 -s 8 --retry-wait=3 --max-tries=5 \
+            -o clang.tar.gz \
+            "https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.tar.gz"
+          tar -xzf clang.tar.gz && rm clang.tar.gz
+          CLANG_DIR=$(find . -maxdepth 1 -type d -name "*proton*" | head -1)
+          sudo mkdir -p /usr/local/clang
+          sudo cp -r "$CLANG_DIR"/* /usr/local/clang/
+          sudo ln -sf /usr/local/clang/bin/clang /usr/bin/clang
+          sudo ln -sf /usr/local/clang/bin/ld.lld /usr/bin/ld.lld
+          sudo ln -sf /usr/local/clang/bin/llvm-ar /usr/bin/llvm-ar
+          sudo ln -sf /usr/local/clang/bin/llvm-nm /usr/bin/llvm-nm
+          sudo ln -sf /usr/local/clang/bin/llvm-objcopy /usr/bin/llvm-objcopy
+          sudo ln -sf /usr/local/clang/bin/llvm-objdump /usr/bin/llvm-objdump
+          sudo ln -sf /usr/local/clang/bin/llvm-strip /usr/bin/llvm-strip
+          sudo ln -sf /usr/bin/ld.lld /usr/bin/ld
+          clang --version
+
+      - name: Increase swap space
+        run: |
+          if swapon --show | grep -q "/swapfile"; then exit 0; fi
+          sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+          sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+          free -h
 
       - name: Setup KernelSU-Next v1.1.1
         working-directory: ./kernel
@@ -56,7 +85,114 @@ jobs:
                   open(p, 'w').write(s)
           PYEOF
 
-      - name: Configure & Build kernel (GCC)
+      - name: Patch Manual Hook (R15-Next)
+        working-directory: ./kernel
+        run: |
+          python3 - <<'PYEOF'
+          import os, re
+
+          # LOCALVERSION
+          m = open('Makefile').read()
+          m = re.sub(r'^LOCALVERSION[ \t]*=.*$', '', m, flags=re.M)
+          m = re.sub(r'^(EXTRAVERSION[ \t]*=.*)$', r'\1\nLOCALVERSION = -Haubai-R15', m, count=1, flags=re.M)
+          open('Makefile', 'w').write(m)
+
+          # Manual Hook (R15-Next dùng vfs_read, do_faccessat, vfs_statx)
+          # fs/exec.c
+          p = 'fs/exec.c'
+          s = open(p).read()
+          if 'ksu_handle_execveat' not in s:
+              s = s.replace(
+                  '#include <linux/sched.h>',
+                  '#include <linux/sched.h>\n'
+                  '#ifdef CONFIG_KSU\n'
+                  'extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n'
+                  '#endif', 1)
+              s = re.sub(
+                  r'(static int do_execveat_common\(int fd, struct filename \*filename,[^}]*?\{)',
+                  r'\1\n#ifdef CONFIG_KSU\n    ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif',
+                  s, count=1)
+              open(p, 'w').write(s)
+
+          # fs/open.c
+          p = 'fs/open.c'
+          s = open(p).read()
+          if 'ksu_handle_faccessat' not in s:
+              s = re.sub(
+                  r'(^long do_faccessat\()',
+                  '#ifdef CONFIG_KSU\n'
+                  'extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n'
+                  '#endif\n'
+                  r'\1', s, count=1, flags=re.M)
+              s = re.sub(
+                  r'(long do_faccessat\([^}]*?\{)',
+                  r'\1\n#ifdef CONFIG_KSU\n    ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif',
+                  s, count=1)
+              open(p, 'w').write(s)
+
+          # fs/read_write.c
+          p = 'fs/read_write.c'
+          s = open(p).read()
+          if 'ksu_handle_vfs_read' not in s:
+              s = re.sub(
+                  r'(^ssize_t vfs_read\()',
+                  '#ifdef CONFIG_KSU\n'
+                  'extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n'
+                  '#endif\n'
+                  r'\1', s, count=1, flags=re.M)
+              s = re.sub(
+                  r'(ssize_t vfs_read\([^}]*?\{)',
+                  r'\1\n#ifdef CONFIG_KSU\n    ksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif',
+                  s, count=1)
+              open(p, 'w').write(s)
+
+          # fs/stat.c
+          p = 'fs/stat.c'
+          s = open(p).read()
+          if 'ksu_handle_stat' not in s:
+              s = re.sub(
+                  r'(^int vfs_statx\()',
+                  '#ifdef CONFIG_KSU\n'
+                  'extern int ksu_handle_stat(int *dfd, const char __user **filename_user, void **statbuf, int *flags);\n'
+                  '#endif\n'
+                  r'\1', s, count=1, flags=re.M)
+              s = re.sub(
+                  r'(int vfs_statx\([^}]*?\{)',
+                  r'\1\n#ifdef CONFIG_KSU\n    ksu_handle_stat(&dfd, &filename, &stat, &flags);\n#endif',
+                  s, count=1)
+              open(p, 'w').write(s)
+
+          print("Patches applied")
+          PYEOF
+
+      - name: Fix Clang compatibility issues
+        working-directory: ./kernel
+        run: |
+          sed -i 's/-implicit-function-declaration//g' Makefile
+          find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} + 2>/dev/null || true
+          sed -i 's/-flto=thin//g; s/-flto=full//g; s/-flto=auto//g' Makefile
+          find . -name "Makefile*" -exec sed -i 's/-flto=thin//g' {} + 2>/dev/null || true
+          sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
+          echo 'HOSTCFLAGS += -Wno-error' >> Makefile
+          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
+          echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
+
+      - name: Set environment
+        run: |
+          {
+            echo "CC=clang"
+            echo "LD=ld.lld"
+            echo "AR=llvm-ar"
+            echo "NM=llvm-nm"
+            echo "OBJCOPY=llvm-objcopy"
+            echo "OBJDUMP=llvm-objdump"
+            echo "STRIP=llvm-strip"
+            echo "CROSS_COMPILE=aarch64-linux-gnu-"
+            echo "ARCH=arm64"
+            echo "HOSTLDFLAGS=-fuse-ld=lld"
+          } >> $GITHUB_ENV
+
+      - name: Configure & Build kernel
         working-directory: ./kernel
         run: |
           rm -rf out
@@ -66,16 +202,44 @@ jobs:
           {
             echo "CONFIG_KSU=y"
             echo "# CONFIG_KPROBES is not set"
-            echo 'CONFIG_LOCALVERSION="-Haubai"'
+            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
+            echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
+            echo "# CONFIG_LTO is not set"
+            echo "# CONFIG_LTO_CLANG is not set"
+            echo "# CONFIG_LTO_CLANG_THIN is not set"
+            echo "# CONFIG_THINLTO is not set"
+            echo 'CONFIG_LOCALVERSION="-Haubai-R15"'
+            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
+            echo "CONFIG_IMG_GZ_DTB=y"
+            echo "# CONFIG_IMG_DTB is not set"
+            echo "# CONFIG_DEBUG_INFO is not set"
           } >> out/.config
 
           make O=out olddefconfig
 
+          echo "=== Verify config ==="
+          grep -E "CONFIG_KSU|CONFIG_LOCALVERSION|CONFIG_LTO" out/.config || true
+
           make -j2 O=out \
-            ARCH=arm64 \
-            CC=aarch64-linux-gnu-gcc \
-            CROSS_COMPILE=aarch64-linux-gnu- \
+            ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- HOSTLDFLAGS="-fuse-ld=lld" \
             2>&1 | tee build.log
+
+      - name: Show artifacts
+        if: always()
+        working-directory: ./kernel
+        run: |
+          [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
+          ls -la out/arch/arm64/boot/ || true
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.defconfig }}
+          path: kernel/build.log
+          if-no-files-found: warn
 
       - name: Package zip
         if: success()
@@ -84,11 +248,12 @@ jobs:
           if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
           elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then cp ../kernel/out/arch/arm64/boot/Image.gz .
           else cp ../kernel/out/arch/arm64/boot/Image .; fi
-          zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
+          zip -r9 ../HaubaiKernel_R15_${{ matrix.defconfig }}.zip *
 
       - name: Upload zip
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: HaubaiKernel_${{ matrix.defconfig }}
-          path: HaubaiKernel_${{ matrix.defconfig }}.zip
+          name: HaubaiKernel_R15_${{ matrix.defconfig }}
+          path: HaubaiKernel_R15_${{ matrix.defconfig }}.zip
+          if-no-files-found: warn
