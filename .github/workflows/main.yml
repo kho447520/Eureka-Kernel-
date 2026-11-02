@@ -69,7 +69,7 @@ jobs:
 
           # fs/open.c
           sed -i '/^long do_faccessat/i\
-          #ifdef CONFIG_KSU\
+           #ifdef CONFIG_KSU\
           extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
           #endif' fs/open.c
           sed -i '/^long do_faccessat/,/^{/ { /^{/a\
@@ -100,19 +100,8 @@ jobs:
           #endif
           }' fs/stat.c
 
-          # kernel/reboot.c
-          sed -i '/^SYSCALL_DEFINE4(reboot,/i\
-          #ifdef CONFIG_KSU\
-          extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\
-          #endif' kernel/reboot.c
-          sed -i '/^SYSCALL_DEFINE4(reboot,/,/^{/ { /^{/a\
-          #ifdef CONFIG_KSU\
-          ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
-          #endif
-          }' kernel/reboot.c
-
           echo "=== Verify patches ==="
-          grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c
+          grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
 
       # =========================================================
       # 2b. FIX CLANG ERRORS
@@ -154,34 +143,34 @@ jobs:
       - name: Configure & Build kernel
         working-directory: ./kernel
         run: |
-         export PLATFORM_VERSION=11
-         make O=out ${{ matrix.defconfig }}
+          export PLATFORM_VERSION=11
+          make O=out ${{ matrix.defconfig }}
 
-         {
-         echo "CONFIG_KSU=y"
-         echo "# CONFIG_KPROBES is not set"
-         echo "CONFIG_LTO_NONE=y"
-         echo 'CONFIG_LOCALVERSION="-Haubai"'
-         echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
-         } >> out/.config
+          {
+            echo "CONFIG_KSU=y"
+            echo "# CONFIG_KPROBES is not set"
+            echo "CONFIG_LTO_NONE=y"
+            echo 'CONFIG_LOCALVERSION="-Haubai"'
+            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
+          } >> out/.config
 
-         make O=out olddefconfig
+          make O=out olddefconfig
 
-         echo "=== Verify config after olddefconfig ==="
-         grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
+          echo "=== Verify config after olddefconfig ==="
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
 
-         make -j$(nproc) O=out \
-         ARCH=arm64 \
-         CC=clang \
-         LD=ld.lld \
-         AR=llvm-ar \
-         NM=llvm-nm \
-         OBJCOPY=llvm-objcopy \
-         OBJDUMP=llvm-objdump \
-         STRIP=llvm-strip \
-         CROSS_COMPILE=aarch64-linux-gnu- \
-         2>&1 | tee build.log
-         
+          make -j$(nproc) O=out \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            2>&1 | tee build.log
+
       # =========================================================
       # 5. PACKAGE & UPLOAD
       # =========================================================
