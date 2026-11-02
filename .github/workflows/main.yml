@@ -1,4 +1,4 @@
-name: Build Exynos7885 KSU-Next v1.1.1 (Clang 14)
+name: Build Exynos7885 KSU-Next v1.1.1 (Ubuntu Clang)
 on:
   workflow_dispatch:
   push:
@@ -29,11 +29,17 @@ jobs:
           path: kernel
           submodules: recursive
 
-      - name: Install build dependencies
+      - name: Install build dependencies (including Ubuntu Clang)
         run: |
           sudo apt update
           sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
-            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler aria2
+            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler \
+            clang lld llvm
+
+      - name: Verify Ubuntu Clang
+        run: |
+          clang --version
+          ld.lld --version
 
       - name: Setup KernelSU-Next v1.1.1
         working-directory: ./kernel
@@ -132,41 +138,10 @@ jobs:
           sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
           echo 'HOSTCFLAGS += -Wno-error' >> Makefile
           sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
+          # Vá thêm lỗi C23 (bool/true/false) của Clang mới
+          echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
 
-      - name: Setup AOSP Clang 14 (Fast & Stable)
-        run: |
-          mkdir -p $HOME/clang && cd $HOME/clang
-          aria2c -x 8 -s 8 --retry-wait=3 --max-tries=5 \
-            -o clang.tar.gz \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r450784e.tar.gz"
-
-          if [ ! -s clang.tar.gz ]; then
-            echo "ERROR: clang.tar.gz is empty"
-            exit 1
-          fi
-          ls -lh clang.tar.gz
-
-          tar -xzf clang.tar.gz
-          rm clang.tar.gz
-
-          sudo mkdir -p /usr/local/clang14
-          sudo cp -r $HOME/clang/* /usr/local/clang14/
-
-          sudo ln -sf /usr/local/clang14/bin/clang /usr/bin/clang
-          sudo ln -sf /usr/local/clang14/bin/ld.lld /usr/bin/ld.lld
-          sudo ln -sf /usr/local/clang14/bin/llvm-ar /usr/bin/llvm-ar
-          sudo ln -sf /usr/local/clang14/bin/llvm-nm /usr/bin/llvm-nm
-          sudo ln -sf /usr/local/clang14/bin/llvm-objcopy /usr/bin/llvm-objcopy
-          sudo ln -sf /usr/local/clang14/bin/llvm-objdump /usr/bin/llvm-objdump
-          sudo ln -sf /usr/local/clang14/bin/llvm-strip /usr/bin/llvm-strip
-          sudo ln -sf /usr/bin/ld.lld /usr/bin/ld
-          sudo ln -sf /usr/bin/ld.lld /usr/bin/ld.gold
-
-          which clang && which ld.lld
-          clang --version
-          ld.lld --version
-
-      - name: Set environment (Clang 14)
+      - name: Set environment (Ubuntu Clang)
         run: |
           {
             echo "CC=clang"
