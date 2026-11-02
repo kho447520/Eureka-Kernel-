@@ -182,63 +182,65 @@ jobs:
           } >> $GITHUB_ENV
 
       - name: Configure & Build kernel
-        working-directory: ./kernel
-        run: |
-          rm -rf out
-          export PLATFORM_VERSION=11
-          make O=out ${{ matrix.defconfig }}
-          make O=out olddefconfig
+      working-directory: ./kernel
+      run: |
+         rm -rf out
+         export PLATFORM_VERSION=11
+         make O=out ${{ matrix.defconfig }}   
+         {
+         echo "CONFIG_KSU=y"
+         echo "# CONFIG_KPROBES is not set"
+         echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
+         echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
+         echo "# CONFIG_LTO is not set"
+         echo "# CONFIG_LTO_CLANG is not set"
+         echo "# CONFIG_LTO_CLANG_THIN is not set"
+         echo "# CONFIG_THINLTO is not set"
+         echo 'CONFIG_LOCALVERSION="-Haubai"'
+         echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
+         echo "CONFIG_IMG_GZ_DTB=y"
+         echo "# CONFIG_IMG_DTB is not set"
+         } >> out/.config
 
-          {
-            echo "CONFIG_KSU=y"
-            echo "# CONFIG_KPROBES is not set"
-            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
-            echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
-            echo "# CONFIG_LTO is not set"
-            echo "# CONFIG_LTO_CLANG is not set"
-            echo "# CONFIG_LTO_CLANG_THIN is not set"
-            echo "# CONFIG_THINLTO is not set"
-            echo 'CONFIG_LOCALVERSION="-Haubai"'
-            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
-          } >> out/.config
+         make O=out olddefconfig
 
-          echo "=== Verify config BEFORE build ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
+         echo "=== Verify config BEFORE build ==="
+         grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE|CONFIG_IMG_GZ_DTB" out/.config || true
 
-          make -j$(nproc) O=out \
-            ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- HOSTLDFLAGS="-fuse-ld=lld" \
-            2>&1 | tee build.log
+         make -j$(nproc) O=out \
+         ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
+         OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+         CROSS_COMPILE=aarch64-linux-gnu- HOSTLDFLAGS="-fuse-ld=lld" \
+         2>&1 | tee build.log
+         
+         - name: Show artifacts
+           if: always()
+           working-directory: ./kernel
+           run: |
+              [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
+              ls -la out/arch/arm64/boot/ || true
 
-      - name: Show artifacts
-        if: always()
-        working-directory: ./kernel
-        run: |
-          [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
-          ls -la out/arch/arm64/boot/ || true
+         - name: Upload build log
+           if: always()
+           uses: actions/upload-artifact@v4
+           with:
+           name: build-log-${{ matrix.defconfig }}
+           path: kernel/build.log
+           if-no-files-found: warn
 
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-${{ matrix.defconfig }}
-          path: kernel/build.log
-          if-no-files-found: warn
+         - name: Package zip
+           if: success()
+           run: |
+              cp -r kernel/kernel_zip/anykernel ak && cd ak
+              if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
+              elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then cp ../kernel/out/arch/arm64/boot/Image.gz .
+              else cp ../kernel/out/arch/arm64/boot/Image .; fi
+              zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
 
-      - name: Package zip
-        if: success()
-        run: |
-          cp -r kernel/kernel_zip/anykernel ak && cd ak
-          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
-          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then cp ../kernel/out/arch/arm64/boot/Image.gz .
-          else cp ../kernel/out/arch/arm64/boot/Image .; fi
-          zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
-
-      - name: Upload zip
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: HaubaiKernel_${{ matrix.defconfig }}
-          path: HaubaiKernel_${{ matrix.defconfig }}.zip
-          if-no-files-found: warn
+         - name: Upload zip
+           if: success()
+           uses: actions/upload-artifact@v4
+           with:
+           name: HaubaiKernel_${{ matrix.defconfig }}
+           path: HaubaiKernel_${{ matrix.defconfig }}.zip
+           if-no-files-found: warn
