@@ -1,11 +1,11 @@
-name: Build Exynos7885 KSU v0.9.5 (GCC Fixed)
+name: Build Exynos7885 KSU-Next v1.1.1 (Clang 14)
 on:
   workflow_dispatch:
   push:
     branches: [ R24U ]
 
 env:
-  KSU_TAG: "v0.9.5"
+  KSU_TAG: "v1.1.1"
   LOCALVERSION: "-Haubai"
 
 jobs:
@@ -22,6 +22,9 @@ jobs:
           - exynos7885-a40_defconfig
 
     steps:
+      # =========================================================
+      # 1. CHECKOUT & DEPENDENCIES
+      # =========================================================
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -35,12 +38,16 @@ jobs:
           sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
             gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler
 
-      - name: Setup KernelSU & Patch source
+      # =========================================================
+      # 2. KERNELSU-NEXT + PATCH SOURCE
+      # =========================================================
+      - name: Setup KernelSU-Next v1.1.1 & Patch source
         working-directory: ./kernel
         run: |
           git submodule update --init --recursive
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${KSU_TAG}"
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${KSU_TAG}/kernel/setup.sh" | bash -s "${KSU_TAG}"
 
+          # --- Patch LOCALVERSION ---
           sed -i '/^LOCALVERSION[[:space:]]*=/d' Makefile
           sed -i '/^EXTRAVERSION[[:space:]]*=/a LOCALVERSION = -Haubai' Makefile
           for f in arch/arm64/configs/exynos7885-*defconfig; do
@@ -48,7 +55,8 @@ jobs:
             echo 'CONFIG_LOCALVERSION="-Haubai"' >> "$f"
           done
 
-          # Manual Hook patches (giữ nguyên)
+          # --- Patch Manual Hook (kèm extern) ---
+          # fs/exec.c
           sed -i '/^#include <linux\/sched.h>/a\
           #ifdef CONFIG_KSU\
           extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\
@@ -59,6 +67,7 @@ jobs:
           #endif
           }' fs/exec.c
 
+          # fs/open.c
           sed -i '/^long do_faccessat/i\
           #ifdef CONFIG_KSU\
           extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
@@ -69,6 +78,7 @@ jobs:
           #endif
           }' fs/open.c
 
+          # fs/read_write.c
           sed -i '/^ssize_t vfs_read/i\
           #ifdef CONFIG_KSU\
           extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
@@ -79,6 +89,7 @@ jobs:
           #endif
           }' fs/read_write.c
 
+          # fs/stat.c
           sed -i '/^int vfs_statx/i\
           #ifdef CONFIG_KSU\
           extern int ksu_handle_stat(int *dfd, const char __user **filename_user, void **statbuf, int *flags);\
@@ -89,95 +100,106 @@ jobs:
           #endif
           }' fs/stat.c
 
+          echo "=== Verify patches ==="
+          grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
+
       # =========================================================
-      # FIX TẤT CẢ LỖI GCC
+      # 2b. FIX CLANG COMPATIBILITY
       # =========================================================
-      - name: Fix all GCC 13/14 compatibility issues
+      - name: Fix Clang compatibility issues
         working-directory: ./kernel
         run: |
-          # 1. Sửa cờ -implicit-function-declaration (GCC mới dùng -W...)
+          # Sửa cờ -implicit-function-declaration
           sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' Makefile
           find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' {} + 2>/dev/null || true
 
-          # 2. Xóa cờ LTO của Clang (GCC không hiểu -flto=thin)
-          sed -i 's/-flto=thin//g; s/-flto=full//g; s/-flto=auto//g' Makefile
-          find . -name "Makefile*" -exec sed -i 's/-flto=thin//g' {} + 2>/dev/null || true
+          # Sửa lỗi section attribute trên biến local
+          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
 
-          # 3. Tắt -Werror để tránh GCC mới coi warning là lỗi
+          # Xóa -Werror
           sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
           echo 'HOSTCFLAGS += -Wno-error' >> Makefile
 
-          # 4. Sửa lỗi "section attribute cannot be specified for local variables"
-          #    (GCC 13+ không cho phép __read_mostly trên biến local)
-          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
-
-          # 5. Ép chuẩn C11 (tránh GCC 13+ mặc định C23 làm bool/true/false thành keyword)
-          #    Đây là nguyên nhân gây lỗi "bool redefined" hoặc "cannot use keyword 'false'"
-          echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
-
           echo "=== Verify fixes ==="
-          grep -n "implicit-function" Makefile | head -3 || true
-          grep -n "flto" Makefile | head -3 || true
           grep -n "zero_pfn" include/asm-generic/pgtable.h | head -3 || true
-          grep -n "gnu11" Makefile | tail -3 || true
 
-      - name: Set environment (GCC)
+      # =========================================================
+      # 3. TOOLCHAIN (AOSP Clang 14 - r450784e)
+      # =========================================================
+      - name: Setup AOSP Clang 14 (r450784e)
+        run: |
+          mkdir -p toolchain && cd toolchain
+          curl -fL --retry 3 -o clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-13.0.0_r1/clang-r450784e.tar.gz"
+          tar -xzf clang.tar.gz && rm clang.tar.gz
+          echo "$(pwd)/bin" >> $GITHUB_PATH
+
+      - name: Set environment (Clang 14)
         run: |
           {
-            echo "CC=aarch64-linux-gnu-gcc"
-            echo "LD=aarch64-linux-gnu-ld"
-            echo "AR=aarch64-linux-gnu-ar"
-            echo "NM=aarch64-linux-gnu-nm"
-            echo "OBJCOPY=aarch64-linux-gnu-objcopy"
-            echo "OBJDUMP=aarch64-linux-gnu-objdump"
-            echo "STRIP=aarch64-linux-gnu-strip"
+            echo "CC=clang"
+            echo "LD=ld.lld"
+            echo "AR=llvm-ar"
+            echo "NM=llvm-nm"
+            echo "OBJCOPY=llvm-objcopy"
+            echo "OBJDUMP=llvm-objdump"
+            echo "STRIP=llvm-strip"
             echo "CROSS_COMPILE=aarch64-linux-gnu-"
             echo "ARCH=arm64"
-            } >> $GITHUB_ENV
-            
-      - name: Configure & Build kernel (GCC)
+          } >> $GITHUB_ENV
+
+      # =========================================================
+      # 4. BUILD
+      # =========================================================
+      - name: Configure & Build kernel (Clang 14)
         working-directory: ./kernel
         run: |
-           rm -rf out
-           export PLATFORM_VERSION=11
-           make O=out ${{ matrix.defconfig }}
-           
-           make O=out olddefconfig
+          rm -rf out
+          export PLATFORM_VERSION=11
+          make O=out ${{ matrix.defconfig }}
 
-           {
-           echo "CONFIG_KSU=y"
-           echo "# CONFIG_KPROBES is not set"
-           echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
-           echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
-           echo "# CONFIG_LTO is not set"
-           echo "# CONFIG_LTO_CLANG is not set"
-           echo "# CONFIG_LTO_CLANG_THIN is not set"
-           echo "# CONFIG_LTO_GCC is not set"
-           echo "# CONFIG_THINLTO is not set"
-           echo 'CONFIG_LOCALVERSION="-Haubai"'
-           echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
-           } >> out/.config
-           
-           echo "=== Verify config BEFORE build ==="
-           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
+          # olddefconfig trước để resolve dependencies
+          make O=out olddefconfig
 
-           make -j$(nproc) O=out \
-           ARCH=arm64 \
-           CC=aarch64-linux-gnu-gcc \
-           LD=aarch64-linux-gnu-ld \
-           AR=aarch64-linux-gnu-ar \
-           NM=aarch64-linux-gnu-nm \
-           OBJCOPY=aarch64-linux-gnu-objcopy \
-           OBJDUMP=aarch64-linux-gnu-objdump \
-           STRIP=aarch64-linux-gnu-strip \
-           CROSS_COMPILE=aarch64-linux-gnu- \
-           2>&1 | tee build.log
-      
+          # Sau đó thêm config (ghi đè kết quả olddefconfig)
+          {
+            echo "CONFIG_KSU=y"
+            echo "# CONFIG_KPROBES is not set"
+            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
+            echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
+            echo "# CONFIG_LTO is not set"
+            echo "# CONFIG_LTO_CLANG is not set"
+            echo "# CONFIG_LTO_CLANG_THIN is not set"
+            echo "# CONFIG_THINLTO is not set"
+            echo 'CONFIG_LOCALVERSION="-Haubai"'
+            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
+          } >> out/.config
+
+          echo "=== Verify config BEFORE build ==="
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
+
+          make -j$(nproc) O=out \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            2>&1 | tee build.log
+
+      # =========================================================
+      # 5. PACKAGE & UPLOAD
+      # =========================================================
       - name: Show artifacts
         if: always()
         working-directory: ./kernel
         run: |
           [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
+          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "Haubai" || true
+          echo "=== Boot artifacts ==="
           ls -la out/arch/arm64/boot/ || true
 
       - name: Upload build log
@@ -188,13 +210,20 @@ jobs:
           path: kernel/build.log
           if-no-files-found: warn
 
-      - name: Package zip
+      - name: Package flashable zip
         if: success()
         run: |
           cp -r kernel/kernel_zip/anykernel ak && cd ak
-          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
-          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then cp ../kernel/out/arch/arm64/boot/Image.gz .
-          else cp ../kernel/out/arch/arm64/boot/Image .; fi
+          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
+            echo "Using Image.gz-dtb (DTB appended)"
+          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
+            cp ../kernel/out/arch/arm64/boot/Image.gz .
+            echo "::warning::Image.gz-dtb not found, using Image.gz"
+          else
+            cp ../kernel/out/arch/arm64/boot/Image .
+            echo "::warning::Image.gz-dtb not found, using Image"
+          fi
           zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
 
       - name: Upload zip
