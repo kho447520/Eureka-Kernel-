@@ -1,13 +1,12 @@
-name: Build Exynos7885 + KernelSU v0.9.5 (Manual Hook)
+name: Build Exynos7885 KSU v0.9.5
 on:
   workflow_dispatch:
   push:
     branches: [ R24U ]
 
 env:
-  KERNEL_BRANCH: R24U
   KSU_TAG: "v0.9.5"
-  LOCALVERSION: "-HaubaiEureka"
+  LOCALVERSION: "-Haubai"
 
 jobs:
   build:
@@ -23,165 +22,104 @@ jobs:
           - exynos7885-a40_defconfig
 
     steps:
+      # =========================================================
+      # 1. CHECKOUT & DEPENDENCIES
+      # =========================================================
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.KERNEL_BRANCH }}
+          ref: R24U
           path: kernel
-          fetch-depth: 0
           submodules: recursive
-
-      - name: Set Git user
-        working-directory: ./kernel
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
 
       - name: Install build dependencies
         run: |
           sudo apt update
           sudo apt install -y bc bison flex libssl-dev make git python3 cpio gcc-aarch64-linux-gnu zip
 
-      - name: Setup KernelSU v0.9.5
+      # =========================================================
+      # 2. KERNELSU + PATCH SOURCE
+      # =========================================================
+      - name: Setup KernelSU & Patch source
         working-directory: ./kernel
         run: |
-          set -eux
-          git submodule sync --recursive || true
-          git submodule update --init --recursive --progress || true
-
-          echo "Using KernelSU ref: ${KSU_TAG}"
-          # Dùng script setup của KernelSU gốc (tiann)
+          # --- Setup KernelSU ---
+          git submodule update --init --recursive
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${KSU_TAG}"
 
-          if [ -d KernelSU ]; then
-            ( cd KernelSU && git describe --tags 2>/dev/null || git rev-parse --short HEAD )
-          else
-            echo "KernelSU directory not present after setup"
-            exit 1
-          fi
-
-      - name: Patch LOCALVERSION
-        working-directory: ./kernel
-        run: |
-          set -eux
-
-          if grep -q "^LOCALVERSION[[:space:]]*=" Makefile; then
-            sed -i '/^LOCALVERSION[[:space:]]*=/d' Makefile
-          fi
-          if ! grep -q "^LOCALVERSION[[:space:]]*=" Makefile; then
-            sed -i '/^EXTRAVERSION[[:space:]]*=/a LOCALVERSION = -HaubaiEureka' Makefile
-          fi
-
-          for f in arch/arm64/configs/exynos7885-*.config arch/arm64/configs/exynos7885-*defconfig; do
-            [ -f "$f" ] || continue
-            if grep -q "^CONFIG_LOCALVERSION" "$f"; then
-              sed -i '/^CONFIG_LOCALVERSION=/d' "$f"
-            fi
-            echo 'CONFIG_LOCALVERSION="-HaubaiEureka"' >> "$f"
+          # --- Patch LOCALVERSION ---
+          sed -i '/^LOCALVERSION[[:space:]]*=/d' Makefile
+          sed -i '/^EXTRAVERSION[[:space:]]*=/a LOCALVERSION = -Haubai' Makefile
+          for f in arch/arm64/configs/exynos7885-*defconfig; do
+            sed -i '/^CONFIG_LOCALVERSION=/d' "$f"
+            echo 'CONFIG_LOCALVERSION="-Haubai"' >> "$f"
           done
 
-          sed -i 's/-Eureka_R24U/-HaubaiEureka/g; s/Eureka_R24U/HaubaiEureka/g' Makefile || true
-
-          echo "=== After patch ==="
-          grep -n "LOCALVERSION" Makefile || true
-
-      - name: Patch kernel source for Manual Hook
-        working-directory: ./kernel
-        run: |
-          set -eux
-
-          # KernelSU gốc v0.9.5 dùng do_execveat_common (không phải do_execve)
-          EXEC_FILE="fs/exec.c"
-          if ! grep -q "ksu_handle_execveat" "$EXEC_FILE"; then
-            sed -i '/^static int do_execveat_common(int fd, struct filename \*filename,/,/^{/ {
-              /^{/a\
+          # --- Patch Manual Hook (kèm extern) ---
+          # fs/exec.c
+          sed -i '/^#include <linux\/sched.h>/a\
+          #ifdef CONFIG_KSU\
+          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\
+          #endif' fs/exec.c
+          sed -i '/^static int do_execveat_common(int fd, struct filename \*filename,/,/^{/ { /^{/a\
           #ifdef CONFIG_KSU\
           ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\
           #endif
-            }' "$EXEC_FILE"
-            # Thêm extern declaration
-            sed -i '/^#include <linux\/sched.h>/a\
-          #ifdef CONFIG_KSU\
-          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
-                                void *argv, void *envp, int *flags);\
-          #endif\
-          ' "$EXEC_FILE" 2>/dev/null || true
-          fi
+          }' fs/exec.c
 
-          # fs/open.c: do_faccessat (nếu có) hoặc SYSCALL_DEFINE3(faccessat)
-          OPEN_FILE="fs/open.c"
-          if ! grep -q "ksu_handle_faccessat" "$OPEN_FILE"; then
-            # Thử chèn vào do_faccessat trước
-            if grep -q "^long do_faccessat" "$OPEN_FILE"; then
-              sed -i '/^long do_faccessat/,/^{/ {
-                /^{/a\
+          # fs/open.c
+          sed -i '/^long do_faccessat/i\
+          #ifdef CONFIG_KSU\
+          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
+          #endif' fs/open.c
+          sed -i '/^long do_faccessat/,/^{/ { /^{/a\
           #ifdef CONFIG_KSU\
           ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
           #endif
-              }' "$OPEN_FILE"
-            else
-              sed -i '/^SYSCALL_DEFINE3(faccessat,/,/^{/ {
-                /^{/a\
-          #ifdef CONFIG_KSU\
-          ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
-          #endif
-              }' "$OPEN_FILE"
-            fi
-          fi
+          }' fs/open.c
 
-          # fs/read_write.c: vfs_read
-          READ_FILE="fs/read_write.c"
-          if ! grep -q "ksu_handle_vfs_read" "$READ_FILE"; then
-            sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/,/^{/ {
-              /^{/a\
+          # fs/read_write.c
+          sed -i '/^ssize_t vfs_read/i\
+          #ifdef CONFIG_KSU\
+          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
+          #endif' fs/read_write.c
+          sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/,/^{/ { /^{/a\
           #ifdef CONFIG_KSU\
           ksu_handle_vfs_read(&file, &buf, &count, &pos);\
           #endif
-            }' "$READ_FILE"
-          fi
+          }' fs/read_write.c
 
-          # fs/stat.c: vfs_statx hoặc vfs_fstatat
-          STAT_FILE="fs/stat.c"
-          if ! grep -q "ksu_handle_stat" "$STAT_FILE"; then
-            if grep -q "^int vfs_statx" "$STAT_FILE"; then
-              sed -i '/^int vfs_statx/,/^{/ {
-                /^{/a\
+          # fs/stat.c
+          sed -i '/^int vfs_statx/i\
+          #ifdef CONFIG_KSU\
+          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, void **statbuf, int *flags);\
+          #endif' fs/stat.c
+          sed -i '/^int vfs_statx/,/^{/ { /^{/a\
           #ifdef CONFIG_KSU\
           ksu_handle_stat(&dfd, &filename, &stat, &flags);\
           #endif
-              }' "$STAT_FILE"
-            elif grep -q "^int vfs_fstatat" "$STAT_FILE"; then
-              sed -i '/^int vfs_fstatat/,/^{/ {
-                /^{/a\
-          #ifdef CONFIG_KSU\
-          ksu_handle_stat(&dfd, &filename, &stat, &flags);\
-          #endif
-              }' "$STAT_FILE"
-            fi
-          fi
+          }' fs/stat.c
 
-          # kernel/reboot.c: SYSCALL_DEFINE4(reboot)
-          REBOOT_FILE="kernel/reboot.c"
-          if ! grep -q "ksu_handle_sys_reboot" "$REBOOT_FILE"; then
-            sed -i '/^SYSCALL_DEFINE4(reboot,/,/^{/ {
-              /^{/a\
+          # kernel/reboot.c
+          sed -i '/^SYSCALL_DEFINE4(reboot,/i\
+          #ifdef CONFIG_KSU\
+          extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\
+          #endif' kernel/reboot.c
+          sed -i '/^SYSCALL_DEFINE4(reboot,/,/^{/ { /^{/a\
           #ifdef CONFIG_KSU\
           ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
           #endif
-            }' "$REBOOT_FILE"
-          fi
+          }' kernel/reboot.c
 
-          echo "=== Verify patches ==="
-          grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c
-
+      # =========================================================
+      # 3. TOOLCHAIN & ENV
+      # =========================================================
       - name: Setup Neutron Clang
         run: |
-          mkdir -p toolchain
-          cd toolchain
+          mkdir -p toolchain && cd toolchain
           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
-          cd ..
-          echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
+          echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Set environment
         run: |
@@ -197,47 +135,29 @@ jobs:
             echo "ARCH=arm64"
           } >> $GITHUB_ENV
 
-      - name: Clean previous build
-        working-directory: ./kernel
-        run: rm -rf out
-
-      - name: Configure kernel
+      # =========================================================
+      # 4. BUILD
+      # =========================================================
+      - name: Configure & Build kernel
         working-directory: ./kernel
         run: |
           export PLATFORM_VERSION=11
-          make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r ${{ matrix.defconfig }}
+          make O=out ${{ matrix.defconfig }}
 
-          cat >> out/.config <<'EOF'
+          cat >> out/.config <<EOF
           CONFIG_KSU=y
           # CONFIG_KPROBES is not set
           CONFIG_LTO_NONE=y
-          CONFIG_LOCALVERSION="Haubai"
+          CONFIG_LOCALVERSION="-Haubai"
+          CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y
           EOF
 
-          make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r olddefconfig
+          make O=out olddefconfig
+          make -j$(nproc) O=out 2>&1 | tee build.log
 
-          echo "=== Verify config ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LTO|CONFIG_LOCALVERSION" out/.config || true
-
-      - name: Build kernel
-        working-directory: ./kernel
-        run: |
-          export PLATFORM_VERSION=11
-          set -o pipefail
-          make -j$(nproc) O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r \
-            CC=${CC} LD=${LD} AR=${AR} NM=${NM} \
-            OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} STRIP=${STRIP} \
-            CROSS_COMPILE=${CROSS_COMPILE} 2>&1 | tee build.log
-
-      - name: Show kernel version & DTB artifacts
-        if: always()
-        working-directory: ./kernel
-        run: |
-          [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
-          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "HaubaiEureka" || true
-          echo "=== DTB artifacts ==="
-          find out/arch/arm64/boot -maxdepth 3 \( -name "*.dtb" -o -name "*.dtbo" -o -name "dtb.img" -o -name "*.dtb.img" \) 2>/dev/null | sort || true
-
+      # =========================================================
+      # 5. PACKAGE & UPLOAD
+      # =========================================================
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
@@ -249,31 +169,15 @@ jobs:
       - name: Package flashable zip
         if: success()
         run: |
-          set -eux
-          BOOTDIR=kernel/out/arch/arm64/boot
-          cp -r kernel/kernel_zip/anykernel anykernel
-          cd anykernel
-
-          if   [ -f "../$BOOTDIR/Image.gz-dtb" ]; then cp "../$BOOTDIR/Image.gz-dtb" .
-          elif [ -f "../$BOOTDIR/Image.gz" ];     then cp "../$BOOTDIR/Image.gz" .
-          elif [ -f "../$BOOTDIR/Image" ];        then cp "../$BOOTDIR/Image" .
-          else echo "::error::No kernel image found"; exit 1; fi
-
-          mkdir -p dtb dtbo
-          [ -f "../$BOOTDIR/dtb.img" ]  && cp "../$BOOTDIR/dtb.img"  ./dtb/  || true
-          [ -f "../$BOOTDIR/dtbo.img" ] && cp "../$BOOTDIR/dtbo.img" ./dtbo/ || true
-          find "../$BOOTDIR" -maxdepth 4 -name "*.dtb"  -exec cp {} ./dtb/  \; 2>/dev/null || true
-          find "../$BOOTDIR" -maxdepth 4 -name "*.dtbo" -exec cp {} ./dtbo/ \; 2>/dev/null || true
-          [ -z "$(ls -A dtb 2>/dev/null)" ]  && find ../kernel/out -name "*.dtb"  -exec cp {} ./dtb/  \; 2>/dev/null || true
-          [ -z "$(ls -A dtbo 2>/dev/null)" ] && find ../kernel/out -name "*.dtbo" -exec cp {} ./dtbo/ \; 2>/dev/null || true
-          rmdir dtb 2>/dev/null || true
-          rmdir dtbo 2>/dev/null || true
-
-          echo "=== anykernel contents ==="
-          find . -maxdepth 2 -type f | sort
-
-          zip -r9 "../HaubaiKernel_${{ matrix.defconfig }}.zip" *
-          cd ..
+          cp -r kernel/kernel_zip/anykernel ak && cd ak
+          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
+          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
+            cp ../kernel/out/arch/arm64/boot/Image.gz .
+          else
+            cp ../kernel/out/arch/arm64/boot/Image .
+          fi
+          zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
 
       - name: Upload zip
         if: success()
