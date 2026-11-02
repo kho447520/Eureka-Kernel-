@@ -20,7 +20,7 @@ jobs:
           - exynos7885-a30_defconfig
           - exynos7885-a30s_defconfig
           - exynos7885-a40_defconfig
-
+          
     steps:
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -182,8 +182,8 @@ jobs:
           } >> $GITHUB_ENV
 
       - name: Configure & Build kernel
-      working-directory: ./kernel
-      run: |
+        working-directory: ./kernel
+        run: |
          rm -rf out
          export PLATFORM_VERSION=11
          make O=out ${{ matrix.defconfig }}   
