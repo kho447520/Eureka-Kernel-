@@ -48,23 +48,16 @@ jobs:
           git submodule update --init --recursive
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${KSU_TAG}"
 
-          # --- Patch LOCALVERSION (xóa TẤT CẢ dòng cũ) ---
+          # --- Patch LOCALVERSION ---
           sed -i '/^LOCALVERSION[[:space:]]*=/d' Makefile
           sed -i '/^EXTRAVERSION[[:space:]]*=/a LOCALVERSION = -Haubai' Makefile
-
           for f in arch/arm64/configs/exynos7885-*defconfig; do
             sed -i '/^CONFIG_LOCALVERSION=/d' "$f"
             echo 'CONFIG_LOCALVERSION="-Haubai"' >> "$f"
           done
-
           grep -rln "LOCALVERSION" --include="*.sh" . 2>/dev/null | while read f; do
             sed -i 's/LOCALVERSION=-[^ "]*/LOCALVERSION=-Haubai/g' "$f" || true
           done
-
-          echo "=== All LOCALVERSION lines in Makefile ==="
-          grep -n "LOCALVERSION" Makefile || true
-          echo "=== All CONFIG_LOCALVERSION lines in defconfig ==="
-          grep -rn "CONFIG_LOCALVERSION" arch/arm64/configs/ || true
 
           # --- Patch Manual Hook (kèm extern) ---
           # fs/exec.c
@@ -110,32 +103,36 @@ jobs:
           ksu_handle_stat(&dfd, &filename, &stat, &flags);\
           #endif
           }' fs/stat.c
-
+ 
           echo "=== Verify patches ==="
           grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
 
       # =========================================================
-      # 2b. FIX GCC FLAGS FOR KERNEL 4.4
+      # 2b. FIX GCC FLAGS + LTO
       # =========================================================
       - name: Fix GCC flags for kernel 4.4
         working-directory: ./kernel
         run: |
-          # 1. Sửa cờ -implicit-function-declaration thành -Wimplicit-function-declaration
+          # Sửa cờ -implicit-function-declaration
           sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' Makefile
           find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' {} + 2>/dev/null || true
 
-          # 2. Tắt -Werror để tránh GCC mới coi warning là lỗi
+          # Xóa cờ LTO của Clang (GCC không hiểu -flto=thin)
+          sed -i 's/-flto=thin//g' Makefile
+          sed -i 's/-flto=full//g' Makefile
+          sed -i 's/-flto=auto//g' Makefile
+          find . -name "Makefile*" -exec sed -i 's/-flto=thin//g' {} + 2>/dev/null || true
+
+          # Tắt -Werror
           sed -i 's/-Werror//g' Makefile
           sed -i 's/-Werror//g' scripts/Makefile.host 2>/dev/null || true
-
-          # 3. Thêm -Wno-error cho host programs
           if ! grep -q "HOSTCFLAGS += -Wno-error" Makefile; then
             echo 'HOSTCFLAGS += -Wno-error' >> Makefile
           fi
 
           echo "=== Verify flags ==="
           grep -n "implicit-function" Makefile | head -5 || true
-          grep -n "HOSTCFLAGS" Makefile | head -5 || true
+          grep -rn "flto" Makefile | head -10 || true
 
       # =========================================================
       # 3. ENV (GCC)
@@ -168,6 +165,11 @@ jobs:
             echo "CONFIG_KSU=y"
             echo "# CONFIG_KPROBES is not set"
             echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
+            echo "# CONFIG_LTO is not set"
+            echo "# CONFIG_LTO_CLANG is not set"
+            echo "# CONFIG_LTO_CLANG_THIN is not set"
+            echo "# CONFIG_LTO_GCC is not set"
+            echo "# CONFIG_THINLTO is not set"
             echo 'CONFIG_LOCALVERSION="-Haubai"'
             echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
           } >> out/.config
@@ -175,7 +177,7 @@ jobs:
           make O=out olddefconfig
 
           echo "=== Verify config after olddefconfig ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
 
           make -j$(nproc) O=out \
             ARCH=arm64 \
