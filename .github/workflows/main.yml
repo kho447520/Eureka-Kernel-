@@ -43,7 +43,19 @@ jobs:
 
       - name: Increase swap space to prevent OOM
         run: |
-          sudo fallocate -l 4G /swapfile
+          # Bỏ qua nếu swap đã tồn tại
+          if swapon --show | grep -q "/swapfile"; then
+            echo "Swap already enabled, skipping."
+            free -h
+            exit 0
+          fi
+
+          # Dọn dẹp file swap cũ nếu có
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile
+
+          # Tạo file swap mới (2GB)
+          sudo fallocate -l 2G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
