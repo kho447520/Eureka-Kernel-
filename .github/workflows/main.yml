@@ -1,4 +1,4 @@
-name: Build Exynos7885 + KernelSU-Next v1.1.1 Manual Hook (GSI)
+name: Build Exynos7885 + KernelSU v0.9.5 (Manual Hook)
 on:
   workflow_dispatch:
   push:
@@ -6,9 +6,7 @@ on:
 
 env:
   KERNEL_BRANCH: R24U
-  KSU_NEXT_REF: next
-  KSU_NEXT_TAG: "v1.1.1"
-  KSU_VERSION_OVERRIDE: "12851"
+  KSU_TAG: "v0.9.5"
   LOCALVERSION: "-HaubaiEureka"
 
 jobs:
@@ -25,9 +23,6 @@ jobs:
           - exynos7885-a40_defconfig
 
     steps:
-      # =========================================================
-      # PHẦN 1: CHUẨN BỊ NHANH (source, tool, kiểm tra sớm)
-      # =========================================================
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -42,82 +37,34 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      - name: Install build dependencies (nhanh, cache-friendly)
+      - name: Install build dependencies
         run: |
           sudo apt update
           sudo apt install -y bc bison flex libssl-dev make git python3 cpio gcc-aarch64-linux-gnu zip
 
-      # =========================================================
-      # PHẦN 2: KERNELSU-NEXT + KIỂM TRA SỚM (rẻ, phát hiện lỗi ngay)
-      # =========================================================
-      - name: Setup KernelSU-Next v1.1.1
+      - name: Setup KernelSU v0.9.5
         working-directory: ./kernel
         run: |
           set -eux
           git submodule sync --recursive || true
           git submodule update --init --recursive --progress || true
 
-          REF="${KSU_NEXT_TAG:-$KSU_NEXT_REF}"
-          echo "Using KernelSU-Next ref: ${REF}"
+          echo "Using KernelSU ref: ${KSU_TAG}"
+          # Dùng script setup của KernelSU gốc (tiann)
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${KSU_TAG}"
 
-          curl -fL --retry 3 --retry-delay 2 \
-            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/${REF}/kernel/setup.sh" \
-            -o /tmp/ksu_setup.sh
-          chmod +x /tmp/ksu_setup.sh
-          bash /tmp/ksu_setup.sh "${REF}"
-
-          if [ -d KernelSU-Next ]; then
-            ( cd KernelSU-Next && git describe --tags 2>/dev/null || git rev-parse --short HEAD )
+          if [ -d KernelSU ]; then
+            ( cd KernelSU && git describe --tags 2>/dev/null || git rev-parse --short HEAD )
           else
-            echo "KernelSU-Next directory not present after setup"
+            echo "KernelSU directory not present after setup"
             exit 1
           fi
-
-      - name: Check KSU hook signatures (sớm)
-        working-directory: ./kernel
-        run: |
-          echo "=== KSU hook signatures ==="
-          grep -rn "ksu_handle_execveat\|ksu_handle_faccessat\|ksu_handle_vfs_read\|ksu_handle_stat\|ksu_handle_sys_reboot" \
-            KernelSU-Next/kernel/ 2>/dev/null | head -30 || echo "Hook signatures not found"
-
-      - name: Patch KernelSU version number
-        working-directory: ./kernel
-        run: |
-          set -eux
-          TARGET_VERSION="${KSU_VERSION_OVERRIDE:-12851}"
-          echo "Target KSU_VERSION = ${TARGET_VERSION}"
-
-          echo "=== Before patch ==="
-          grep -rn "KSU_VERSION" KernelSU-Next/kernel/ | head -20 || true
-
-          find KernelSU-Next -type f \( -name "*.h" -o -name "*.c" -o -name "Kbuild" -o -name "Makefile" \) \
-            -exec grep -l "KSU_VERSION" {} \; | while read f; do
-              echo "Patching $f"
-              sed -i -E "s/(#define[[:space:]]+KSU_VERSION[[:space:]]+)[0-9]+/\1${TARGET_VERSION}/g" "$f" || true
-              sed -i -E "s/(KSU_VERSION[[:space:]]*=[[:space:]]*)[0-9]+/\1${TARGET_VERSION}/g" "$f" || true
-              sed -i -E "s/(KSU_VERSION[[:space:]]*:=[[:space:]]*)[0-9]+/\1${TARGET_VERSION}/g" "$f" || true
-            done
-
-          echo "=== After patch ==="
-          grep -rn "KSU_VERSION" KernelSU-Next/kernel/ | head -20 || true
-
-      # =========================================================
-      # PHẦN 3: PATCH KERNEL SOURCE (LOCALVERSION + MANUAL HOOK)
-      # =========================================================
-      - name: Find hardcoded LOCALVERSION
-        working-directory: ./kernel
-        run: |
-          echo "=== Makefile top-level ==="
-          grep -n "LOCALVERSION\|Eureka\|R24U" Makefile 2>/dev/null | head -20 || true
-          echo "=== Build scripts ==="
-          grep -rn "LOCALVERSION\|Eureka\|R24U" build.config* *.sh scripts/ 2>/dev/null | head -30 || true
-          echo "=== defconfig ==="
-          grep -n "CONFIG_LOCALVERSION" arch/arm64/configs/*.config arch/arm64/configs/*defconfig 2>/dev/null | head -20 || true
 
       - name: Patch LOCALVERSION
         working-directory: ./kernel
         run: |
           set -eux
+
           if grep -q "^LOCALVERSION[[:space:]]*=" Makefile; then
             sed -i '/^LOCALVERSION[[:space:]]*=/d' Makefile
           fi
@@ -133,68 +80,92 @@ jobs:
             echo 'CONFIG_LOCALVERSION="-HaubaiEureka"' >> "$f"
           done
 
-          grep -rln "LOCALVERSION" --include="*.sh" . 2>/dev/null | while read f; do
-            sed -i 's/LOCALVERSION=-[^ "]*/LOCALVERSION=-HaubaiEureka/g' "$f" || true
-          done
-
           sed -i 's/-Eureka_R24U/-HaubaiEureka/g; s/Eureka_R24U/HaubaiEureka/g' Makefile || true
+
+          echo "=== After patch ==="
+          grep -n "LOCALVERSION" Makefile || true
 
       - name: Patch kernel source for Manual Hook
         working-directory: ./kernel
         run: |
           set -eux
 
+          # KernelSU gốc v0.9.5 dùng do_execveat_common (không phải do_execve)
           EXEC_FILE="fs/exec.c"
           if ! grep -q "ksu_handle_execveat" "$EXEC_FILE"; then
-            sed -i '/^int do_execve(struct filename \*filename,/i\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
+            sed -i '/^static int do_execveat_common(int fd, struct filename \*filename,/,/^{/ {
+              /^{/a\
+          #ifdef CONFIG_KSU\
+          ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\
+          #endif
+            }' "$EXEC_FILE"
+            # Thêm extern declaration
+            sed -i '/^#include <linux\/sched.h>/a\
+          #ifdef CONFIG_KSU\
           extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\
                                 void *argv, void *envp, int *flags);\
           #endif\
-          ' "$EXEC_FILE"
-            sed -i '/^int do_execve(struct filename \*filename,/,/^{/ {
-              /^{/a\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
-          ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\
-          #endif
-            }' "$EXEC_FILE"
+          ' "$EXEC_FILE" 2>/dev/null || true
           fi
 
+          # fs/open.c: do_faccessat (nếu có) hoặc SYSCALL_DEFINE3(faccessat)
           OPEN_FILE="fs/open.c"
           if ! grep -q "ksu_handle_faccessat" "$OPEN_FILE"; then
-            sed -i '/^SYSCALL_DEFINE3(faccessat,/,/^{/ {
-              /^{/a\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
+            # Thử chèn vào do_faccessat trước
+            if grep -q "^long do_faccessat" "$OPEN_FILE"; then
+              sed -i '/^long do_faccessat/,/^{/ {
+                /^{/a\
+          #ifdef CONFIG_KSU\
           ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
           #endif
-            }' "$OPEN_FILE"
+              }' "$OPEN_FILE"
+            else
+              sed -i '/^SYSCALL_DEFINE3(faccessat,/,/^{/ {
+                /^{/a\
+          #ifdef CONFIG_KSU\
+          ksu_handle_faccessat(&dfd, &filename, &mode, NULL);\
+          #endif
+              }' "$OPEN_FILE"
+            fi
           fi
 
+          # fs/read_write.c: vfs_read
           READ_FILE="fs/read_write.c"
           if ! grep -q "ksu_handle_vfs_read" "$READ_FILE"; then
             sed -i '/^ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/,/^{/ {
               /^{/a\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          #ifdef CONFIG_KSU\
           ksu_handle_vfs_read(&file, &buf, &count, &pos);\
           #endif
             }' "$READ_FILE"
           fi
 
+          # fs/stat.c: vfs_statx hoặc vfs_fstatat
           STAT_FILE="fs/stat.c"
           if ! grep -q "ksu_handle_stat" "$STAT_FILE"; then
-            sed -i '/^SYSCALL_DEFINE4(newfstatat,/,/^{/ {
-              /^{/a\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
-          ksu_handle_stat(&dfd, &filename, &statbuf, &flag);\
+            if grep -q "^int vfs_statx" "$STAT_FILE"; then
+              sed -i '/^int vfs_statx/,/^{/ {
+                /^{/a\
+          #ifdef CONFIG_KSU\
+          ksu_handle_stat(&dfd, &filename, &stat, &flags);\
           #endif
-            }' "$STAT_FILE"
+              }' "$STAT_FILE"
+            elif grep -q "^int vfs_fstatat" "$STAT_FILE"; then
+              sed -i '/^int vfs_fstatat/,/^{/ {
+                /^{/a\
+          #ifdef CONFIG_KSU\
+          ksu_handle_stat(&dfd, &filename, &stat, &flags);\
+          #endif
+              }' "$STAT_FILE"
+            fi
           fi
 
+          # kernel/reboot.c: SYSCALL_DEFINE4(reboot)
           REBOOT_FILE="kernel/reboot.c"
           if ! grep -q "ksu_handle_sys_reboot" "$REBOOT_FILE"; then
             sed -i '/^SYSCALL_DEFINE4(reboot,/,/^{/ {
               /^{/a\
-          #ifdef CONFIG_KSU_MANUAL_HOOK\
+          #ifdef CONFIG_KSU\
           ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
           #endif
             }' "$REBOOT_FILE"
@@ -203,16 +174,14 @@ jobs:
           echo "=== Verify patches ==="
           grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c
 
-          # =========================================================
-          # PHẦN 4: TOOLCHAIN (nặng, tải Neutron)
-          # =========================================================
-      
-          - name: Setup Neutron Clang
-          run: |
-           mkdir -p toolchain && cd toolchain
-           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
-           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
-           cd .. && echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
+      - name: Setup Neutron Clang
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S=10032024
+          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") --patch=glibc
+          cd ..
+          echo "$(pwd)/toolchain/bin" >> $GITHUB_PATH
 
       - name: Set environment
         run: |
@@ -228,14 +197,11 @@ jobs:
             echo "ARCH=arm64"
           } >> $GITHUB_ENV
 
-        # =========================================================
-        # PHẦN 5: CONFIGURE + BUILD (nặng nhất)
-        # =========================================================
       - name: Clean previous build
         working-directory: ./kernel
         run: rm -rf out
 
-      - name: Configure kernel (Manual Hook + no LTO)
+      - name: Configure kernel
         working-directory: ./kernel
         run: |
           export PLATFORM_VERSION=11
@@ -243,18 +209,15 @@ jobs:
 
           cat >> out/.config <<'EOF'
           CONFIG_KSU=y
-          CONFIG_KSU_MANUAL_HOOK=y
-          # CONFIG_KSU_KPROBE_HOOKS is not set
           # CONFIG_KPROBES is not set
           CONFIG_LTO_NONE=y
-          CONFIG_LOCALVERSION="HaubaiEureka"
+          CONFIG_LOCALVERSION="Haubai"
           EOF
 
           make O=out ARCH=arm64 ANDROID_MAJOR_VERSION=r olddefconfig
 
           echo "=== Verify config ==="
-          grep -E "CONFIG_KSU|CONFIG_LTO|CONFIG_LOCALVERSION" out/.config || true
-          grep -n "^LOCALVERSION\|^EXTRAVERSION" Makefile || true
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LTO|CONFIG_LOCALVERSION" out/.config || true
 
       - name: Build kernel
         working-directory: ./kernel
@@ -266,16 +229,12 @@ jobs:
             OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} STRIP=${STRIP} \
             CROSS_COMPILE=${CROSS_COMPILE} 2>&1 | tee build.log
 
-      # =========================================================
-      # PHẦN 6: VERIFY + ĐÓNG GÓI
-      # =========================================================
       - name: Show kernel version & DTB artifacts
         if: always()
         working-directory: ./kernel
         run: |
           [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
-          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "4.4.302" || true
-          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -i "ksu" | head -5 || true
+          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "HaubaiEureka" || true
           echo "=== DTB artifacts ==="
           find out/arch/arm64/boot -maxdepth 3 \( -name "*.dtb" -o -name "*.dtbo" -o -name "dtb.img" -o -name "*.dtb.img" \) 2>/dev/null | sort || true
 
@@ -310,7 +269,9 @@ jobs:
           rmdir dtb 2>/dev/null || true
           rmdir dtbo 2>/dev/null || true
 
+          echo "=== anykernel contents ==="
           find . -maxdepth 2 -type f | sort
+
           zip -r9 "../HaubaiKernel_${{ matrix.defconfig }}.zip" *
           cd ..
 
