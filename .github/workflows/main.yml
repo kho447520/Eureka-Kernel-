@@ -6,7 +6,7 @@ on:
 
 env:
   KSU_TAG: "v1.1.1"
-  LOCALVERSION: "-Haubai"
+  LOCALVERSION: "-Haubai-Eureka-V1"
 
 jobs:
   build:
@@ -40,6 +40,14 @@ jobs:
         run: |
           clang --version
           ld.lld --version
+
+      - name: Increase swap space to prevent OOM
+        run: |
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
 
       - name: Setup KernelSU-Next v1.1.1
         working-directory: ./kernel
@@ -77,14 +85,30 @@ jobs:
         working-directory: ./kernel
         run: |
           python3 - <<'PYEOF'
-          import re
+          import os, re
 
-          # --- LOCALVERSION ---
+          # 1. Xóa LOCALVERSION trong Makefile
           m = open('Makefile').read()
           m = re.sub(r'^LOCALVERSION[ \t]*=.*$', '', m, flags=re.M)
-          m = re.sub(r'^(EXTRAVERSION[ \t]*=.*)$', r'\1\nLOCALVERSION = -Haubai', m, count=1, flags=re.M)
+          m = re.sub(r'^(EXTRAVERSION[ \t]*=.*)$', r'\1\nLOCALVERSION = -Haubai-Eureka-V1', m, count=1, flags=re.M)
           open('Makefile', 'w').write(m)
 
+          # 2. Quét toàn bộ file .sh, .config, defconfig trong source để xóa LOCALVERSION cũ
+          for root, dirs, files in os.walk('.'):
+              if '.git' in root: continue
+              for file in files:
+                  if file.endswith(('.sh', '.config', 'defconfig')) or 'defconfig' in file:
+                      path = os.path.join(root, file)
+                      try:
+                          s = open(path).read()
+                          s = re.sub(r'^.*LOCALVERSION.*=.*$', '', s, flags=re.M)
+                          if 'defconfig' in file:
+                              s += '\nCONFIG_LOCALVERSION="-Haubai-Eureka-V1"\n'
+                          open(path, 'w').write(s)
+                      except Exception:
+                          pass
+
+          # 3. Patch Manual Hook
           # --- fs/exec.c ---
           p = 'fs/exec.c'
           s = open(p).read()
@@ -186,8 +210,6 @@ jobs:
         run: |
           rm -rf out
           export PLATFORM_VERSION=11
-          
-          # Tắt các driver nặng không cần thiết để giảm tải RAM
           make O=out ${{ matrix.defconfig }}
 
           {
@@ -199,18 +221,19 @@ jobs:
             echo "# CONFIG_LTO_CLANG is not set"
             echo "# CONFIG_LTO_CLANG_THIN is not set"
             echo "# CONFIG_THINLTO is not set"
-            echo 'CONFIG_LOCALVERSION="-Haubai"'
+            echo 'CONFIG_LOCALVERSION="-Haubai-Eureka-V1"'
             echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
             echo "CONFIG_IMG_GZ_DTB=y"
             echo "# CONFIG_IMG_DTB is not set"
+            echo "# CONFIG_DEBUG_INFO is not set"
           } >> out/.config
 
           make O=out olddefconfig
 
           echo "=== Verify config BEFORE build ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE|CONFIG_IMG_GZ_DTB" out/.config || true
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE|CONFIG_IMG_GZ_DTB|CONFIG_DEBUG_INFO" out/.config || true
 
-          # Đổi -j$(nproc) thành -j2 để tránh OOM (GitHub runner chỉ có 7GB RAM)
+          # Giảm số job xuống 2 để tránh OOM
           make -j2 O=out \
             ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
