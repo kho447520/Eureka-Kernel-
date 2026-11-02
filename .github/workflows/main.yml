@@ -1,4 +1,4 @@
-name: Build Exynos7885 KSU-Next v1.1.1 (Ubuntu Clang)
+name: Build Exynos7885 KSU-Next v1.1.1 (AOSP Clang 19)
 on:
   workflow_dispatch:
   push:
@@ -29,15 +29,44 @@ jobs:
           path: kernel
           submodules: recursive
 
-      - name: Install build dependencies (including Ubuntu Clang)
+      - name: Install build dependencies
         run: |
           sudo apt update
           sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
-            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler \
-            clang lld llvm
+            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler aria2
 
-      - name: Verify Ubuntu Clang
+      - name: Setup AOSP Clang 19 (r522817)
         run: |
+          mkdir -p $HOME/clang && cd $HOME/clang
+          # Tải từ nhánh main của AOSP prebuilts
+          aria2c -x 8 -s 8 --retry-wait=3 --max-tries=5 \
+            -o clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz"
+
+          if [ ! -s clang.tar.gz ]; then
+            echo "ERROR: clang.tar.gz is empty"
+            exit 1
+          fi
+          ls -lh clang.tar.gz
+
+          tar -xzf clang.tar.gz
+          rm clang.tar.gz
+
+          # Cài vào /usr/local để có trong PATH hệ thống
+          sudo mkdir -p /usr/local/clang19
+          sudo cp -r $HOME/clang/* /usr/local/clang19/
+
+          sudo ln -sf /usr/local/clang19/bin/clang /usr/bin/clang
+          sudo ln -sf /usr/local/clang19/bin/ld.lld /usr/bin/ld.lld
+          sudo ln -sf /usr/local/clang19/bin/llvm-ar /usr/bin/llvm-ar
+          sudo ln -sf /usr/local/clang19/bin/llvm-nm /usr/bin/llvm-nm
+          sudo ln -sf /usr/local/clang19/bin/llvm-objcopy /usr/bin/llvm-objcopy
+          sudo ln -sf /usr/local/clang19/bin/llvm-objdump /usr/bin/llvm-objdump
+          sudo ln -sf /usr/local/clang19/bin/llvm-strip /usr/bin/llvm-strip
+          sudo ln -sf /usr/bin/ld.lld /usr/bin/ld
+          sudo ln -sf /usr/bin/ld.lld /usr/bin/ld.gold
+
+          echo "=== Clang version ==="
           clang --version
           ld.lld --version
 
@@ -74,13 +103,10 @@ jobs:
               exit(0)
 
           s = open(p).read()
-
-          # Nếu đã có extern thì bỏ qua
           if 'extern bool is_manager_apk' in s:
               print("Already patched")
               exit(0)
 
-          # Chèn khai báo extern ngay sau các dòng #include
           includes = list(re.finditer(r'^#include .*$', s, flags=re.M))
           if includes:
               last_include = includes[-1]
@@ -90,10 +116,8 @@ jobs:
               s = '#ifdef CONFIG_KSU\nextern bool is_manager_apk(char *path);\n#endif\n' + s
 
           open(p, 'w').write(s)
-          print("Patched throne_tracker.c: added extern declaration after includes")
+          print("Patched throne_tracker.c: added extern declaration")
           PYEOF
-          echo "=== Verify patch ==="
-          grep -n "is_manager_apk" KernelSU-Next/kernel/throne_tracker.c | head -5
 
       - name: Patch LOCALVERSION & Manual Hook (Python)
         working-directory: ./kernel
@@ -107,22 +131,30 @@ jobs:
           m = re.sub(r'^(EXTRAVERSION[ \t]*=.*)$', r'\1\nLOCALVERSION = -Haubai-Eureka-V1', m, count=1, flags=re.M)
           open('Makefile', 'w').write(m)
 
-          # 2. Quét toàn bộ file .sh, .config, defconfig trong source để xóa LOCALVERSION cũ
+          # 2. Quét toàn bộ file để xóa LOCALVERSION cũ
           for root, dirs, files in os.walk('.'):
-              if '.git' in root: continue
+              if '.git' in root or 'out' in root: continue
               for file in files:
-                  if file.endswith(('.sh', '.config', 'defconfig')) or 'defconfig' in file:
-                      path = os.path.join(root, file)
+                  path = os.path.join(root, file)
+                  if os.path.isfile(path):
                       try:
-                          s = open(path).read()
-                          s = re.sub(r'^.*LOCALVERSION.*=.*$', '', s, flags=re.M)
-                          if 'defconfig' in file:
-                              s += '\nCONFIG_LOCALVERSION="-Haubai-Eureka-V1"\n'
-                          open(path, 'w').write(s)
+                          s = open(path, encoding='utf-8', errors='ignore').read()
+                          s_new = re.sub(r'^.*LOCALVERSION.*=.*$', '', s, flags=re.M)
+                          if s_new != s:
+                              open(path, 'w', encoding='utf-8').write(s_new)
                       except Exception:
                           pass
 
-          # 3. Patch Manual Hook
+          # 3. Thêm LOCALVERSION mới vào defconfig
+          for f in os.listdir('arch/arm64/configs'):
+              if f.startswith('exynos7885') and f.endswith('defconfig'):
+                  path = os.path.join('arch/arm64/configs', f)
+                  s = open(path).read()
+                  s = re.sub(r'^CONFIG_LOCALVERSION=.*$', '', s, flags=re.M)
+                  s += '\nCONFIG_LOCALVERSION="-Haubai-Eureka-V1"\n'
+                  open(path, 'w').write(s)
+
+          # 4. Patch Manual Hook
           # --- fs/exec.c ---
           p = 'fs/exec.c'
           s = open(p).read()
@@ -189,16 +221,13 @@ jobs:
 
           print("=== Patches applied ===")
           PYEOF
-          echo "=== Verify patches ==="
-          grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c || true
 
       - name: Fix Clang compatibility issues
         working-directory: ./kernel
         run: |
-          # XÓA HẲN cờ gây xung đột (thay vì đổi thành -W...)
+          # Xóa hẳn -implicit-function-declaration (tránh lỗi -Wno-Wimplicit...)
           sed -i 's/-implicit-function-declaration//g' Makefile
           find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration//g' {} + 2>/dev/null || true
-          
           sed -i 's/-flto=thin//g; s/-flto=full//g; s/-flto=auto//g' Makefile
           find . -name "Makefile*" -exec sed -i 's/-flto=thin//g' {} + 2>/dev/null || true
           sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
@@ -206,7 +235,7 @@ jobs:
           sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
           echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
 
-      - name: Set environment (Ubuntu Clang)
+      - name: Set environment (AOSP Clang 19)
         run: |
           {
             echo "CC=clang"
@@ -242,6 +271,11 @@ jobs:
             echo "CONFIG_IMG_GZ_DTB=y"
             echo "# CONFIG_IMG_DTB is not set"
             echo "# CONFIG_DEBUG_INFO is not set"
+            echo "# CONFIG_FRAME_POINTER is not set"
+            echo "# CONFIG_ARM64_ERRATUM_843419 is not set"
+            echo "# CONFIG_ARM64_ERRATUM_824069 is not set"
+            echo "# CONFIG_ARM64_ERRATUM_819472 is not set"
+            echo "# CONFIG_ARM64_ERRATUM_832075 is not set"
           } >> out/.config
 
           make O=out olddefconfig
@@ -249,7 +283,7 @@ jobs:
           echo "=== Verify config BEFORE build ==="
           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE|CONFIG_IMG_GZ_DTB|CONFIG_DEBUG_INFO" out/.config || true
 
-          # Giảm số job xuống 2 để tránh OOM
+          # Giảm số job xuống 2 để tránh OOM (Clang 19 ngốn RAM hơn Clang 18)
           make -j2 O=out \
             ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
             OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
