@@ -133,45 +133,46 @@ jobs:
             echo "STRIP=aarch64-linux-gnu-strip"
             echo "CROSS_COMPILE=aarch64-linux-gnu-"
             echo "ARCH=arm64"
-          } >> $GITHUB_ENV
-
+            } >> $GITHUB_ENV
+            
       - name: Configure & Build kernel (GCC)
         working-directory: ./kernel
         run: |
-          rm -rf out
-          export PLATFORM_VERSION=11
-          make O=out ${{ matrix.defconfig }}
+           rm -rf out
+           export PLATFORM_VERSION=11
+           make O=out ${{ matrix.defconfig }}
+           
+           make O=out olddefconfig
 
-          {
-            echo "CONFIG_KSU=y"
-            echo "# CONFIG_KPROBES is not set"
-            echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
-            echo "# CONFIG_LTO is not set"
-            echo "# CONFIG_LTO_CLANG is not set"
-            echo "# CONFIG_LTO_CLANG_THIN is not set"
-            echo "# CONFIG_LTO_GCC is not set"
-            echo "# CONFIG_THINLTO is not set"
-            echo 'CONFIG_LOCALVERSION="-Haubai"'
-            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
-          } >> out/.config
+           {
+           echo "CONFIG_KSU=y"
+           echo "# CONFIG_KPROBES is not set"
+           echo "# CONFIG_CC_STACKPROTECTOR_STRONG is not set"
+           echo "CONFIG_CC_STACKPROTECTOR_REGULAR=y"
+           echo "# CONFIG_LTO is not set"
+           echo "# CONFIG_LTO_CLANG is not set"
+           echo "# CONFIG_LTO_CLANG_THIN is not set"
+           echo "# CONFIG_LTO_GCC is not set"
+           echo "# CONFIG_THINLTO is not set"
+           echo 'CONFIG_LOCALVERSION="-Haubai"'
+           echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
+           } >> out/.config
+           
+           echo "=== Verify config BEFORE build ==="
+           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
 
-          make O=out olddefconfig
-
-          echo "=== Verify config ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
-
-          make -j$(nproc) O=out \
-            ARCH=arm64 \
-            CC=aarch64-linux-gnu-gcc \
-            LD=aarch64-linux-gnu-ld \
-            AR=aarch64-linux-gnu-ar \
-            NM=aarch64-linux-gnu-nm \
-            OBJCOPY=aarch64-linux-gnu-objcopy \
-            OBJDUMP=aarch64-linux-gnu-objdump \
-            STRIP=aarch64-linux-gnu-strip \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            2>&1 | tee build.log
-
+           make -j$(nproc) O=out \
+           ARCH=arm64 \
+           CC=aarch64-linux-gnu-gcc \
+           LD=aarch64-linux-gnu-ld \
+           AR=aarch64-linux-gnu-ar \
+           NM=aarch64-linux-gnu-nm \
+           OBJCOPY=aarch64-linux-gnu-objcopy \
+           OBJDUMP=aarch64-linux-gnu-objdump \
+           STRIP=aarch64-linux-gnu-strip \
+           CROSS_COMPILE=aarch64-linux-gnu- \
+           2>&1 | tee build.log
+      
       - name: Show artifacts
         if: always()
         working-directory: ./kernel
