@@ -35,7 +35,8 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt update
-          sudo apt install -y bc bison flex libssl-dev make git python3 cpio gcc-aarch64-linux-gnu zip
+          sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
+            gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler
 
       # =========================================================
       # 2. KERNELSU + PATCH SOURCE
@@ -47,13 +48,24 @@ jobs:
           git submodule update --init --recursive
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${KSU_TAG}"
 
-          # --- Patch LOCALVERSION ---
+          # --- Patch LOCALVERSION (xóa TẤT CẢ dòng cũ) ---
           sed -i '/^LOCALVERSION[[:space:]]*=/d' Makefile
           sed -i '/^EXTRAVERSION[[:space:]]*=/a LOCALVERSION = -Haubai' Makefile
+
           for f in arch/arm64/configs/exynos7885-*defconfig; do
             sed -i '/^CONFIG_LOCALVERSION=/d' "$f"
             echo 'CONFIG_LOCALVERSION="-Haubai"' >> "$f"
           done
+
+          # Sửa LOCALVERSION trong các script build nếu có
+          grep -rln "LOCALVERSION" --include="*.sh" . 2>/dev/null | while read f; do
+            sed -i 's/LOCALVERSION=-[^ "]*/LOCALVERSION=-Haubai/g' "$f" || true
+          done
+
+          echo "=== All LOCALVERSION lines in Makefile ==="
+          grep -n "LOCALVERSION" Makefile || true
+          echo "=== All CONFIG_LOCALVERSION lines in defconfig ==="
+          grep -rn "CONFIG_LOCALVERSION" arch/arm64/configs/ || true
 
           # --- Patch Manual Hook (kèm extern) ---
           # fs/exec.c
@@ -102,6 +114,22 @@ jobs:
 
           echo "=== Verify patches ==="
           grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
+
+      # =========================================================
+      # 2b. FIX HOST SCRIPT BUILD (GCC 13/14 trên Ubuntu 24.04)
+      # =========================================================
+      - name: Fix host script build for new GCC
+        working-directory: ./kernel
+        run: |
+          # Tắt -Werror toàn cục cho host programs
+          sed -i 's/-Werror//g' scripts/Makefile.host 2>/dev/null || true
+          sed -i 's/-Werror//g' Makefile 2>/dev/null || true
+          # Thêm -Wno-error vào HOSTCFLAGS
+          if ! grep -q "HOSTCFLAGS += -Wno-error" Makefile; then
+            echo 'HOSTCFLAGS += -Wno-error' >> Makefile
+          fi
+          echo "=== HOSTCFLAGS ==="
+          grep -n "HOSTCFLAGS" Makefile | head -5 || true
 
       # =========================================================
       # 3. ENV (GCC)
