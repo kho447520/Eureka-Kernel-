@@ -154,24 +154,34 @@ jobs:
       - name: Configure & Build kernel
         working-directory: ./kernel
         run: |
-          export PLATFORM_VERSION=11
-          make O=out ${{ matrix.defconfig }}
+         export PLATFORM_VERSION=11
+         make O=out ${{ matrix.defconfig }}
 
-          {
-            echo "CONFIG_KSU=y"
-            echo "# CONFIG_KPROBES is not set"
-            echo "CONFIG_LTO_NONE=y"
-            echo 'CONFIG_LOCALVERSION="-Haubai"'
-            echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
-          } >> out/.config
+         {
+         echo "CONFIG_KSU=y"
+         echo "# CONFIG_KPROBES is not set"
+         echo "CONFIG_LTO_NONE=y"
+         echo 'CONFIG_LOCALVERSION="-Haubai"'
+         echo "CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y"
+         } >> out/.config
 
-          make O=out olddefconfig
+         make O=out olddefconfig
 
-          echo "=== Verify config after olddefconfig ==="
-          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
+         echo "=== Verify config after olddefconfig ==="
+         grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
 
-          make -j$(nproc) O=out 2>&1 | tee build.log
-
+         make -j$(nproc) O=out \
+         ARCH=arm64 \
+         CC=clang \
+         LD=ld.lld \
+         AR=llvm-ar \
+         NM=llvm-nm \
+         OBJCOPY=llvm-objcopy \
+         OBJDUMP=llvm-objdump \
+         STRIP=llvm-strip \
+         CROSS_COMPILE=aarch64-linux-gnu- \
+         2>&1 | tee build.log
+         
       # =========================================================
       # 5. PACKAGE & UPLOAD
       # =========================================================
