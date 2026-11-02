@@ -1,4 +1,4 @@
-name: Build Exynos7885 KSU v0.9.5 (GCC)
+name: Build Exynos7885 KSU v0.9.5 (GCC Fixed)
 on:
   workflow_dispatch:
   push:
@@ -22,9 +22,6 @@ jobs:
           - exynos7885-a40_defconfig
 
     steps:
-      # =========================================================
-      # 1. CHECKOUT & DEPENDENCIES
-      # =========================================================
       - name: Checkout kernel source
         uses: actions/checkout@v4
         with:
@@ -38,29 +35,20 @@ jobs:
           sudo apt install -y bc bison flex libssl-dev make git python3 cpio \
             gcc-aarch64-linux-gnu zip libelf-dev pkg-config device-tree-compiler
 
-      # =========================================================
-      # 2. KERNELSU + PATCH SOURCE
-      # =========================================================
       - name: Setup KernelSU & Patch source
         working-directory: ./kernel
         run: |
-          # --- Setup KernelSU ---
           git submodule update --init --recursive
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${KSU_TAG}"
 
-          # --- Patch LOCALVERSION ---
           sed -i '/^LOCALVERSION[[:space:]]*=/d' Makefile
           sed -i '/^EXTRAVERSION[[:space:]]*=/a LOCALVERSION = -Haubai' Makefile
           for f in arch/arm64/configs/exynos7885-*defconfig; do
             sed -i '/^CONFIG_LOCALVERSION=/d' "$f"
             echo 'CONFIG_LOCALVERSION="-Haubai"' >> "$f"
           done
-          grep -rln "LOCALVERSION" --include="*.sh" . 2>/dev/null | while read f; do
-            sed -i 's/LOCALVERSION=-[^ "]*/LOCALVERSION=-Haubai/g' "$f" || true
-          done
 
-          # --- Patch Manual Hook (kèm extern) ---
-          # fs/exec.c
+          # Manual Hook patches (giữ nguyên)
           sed -i '/^#include <linux\/sched.h>/a\
           #ifdef CONFIG_KSU\
           extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\
@@ -71,7 +59,6 @@ jobs:
           #endif
           }' fs/exec.c
 
-          # fs/open.c
           sed -i '/^long do_faccessat/i\
           #ifdef CONFIG_KSU\
           extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
@@ -82,7 +69,6 @@ jobs:
           #endif
           }' fs/open.c
 
-          # fs/read_write.c
           sed -i '/^ssize_t vfs_read/i\
           #ifdef CONFIG_KSU\
           extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\
@@ -93,7 +79,6 @@ jobs:
           #endif
           }' fs/read_write.c
 
-          # fs/stat.c
           sed -i '/^int vfs_statx/i\
           #ifdef CONFIG_KSU\
           extern int ksu_handle_stat(int *dfd, const char __user **filename_user, void **statbuf, int *flags);\
@@ -103,40 +88,39 @@ jobs:
           ksu_handle_stat(&dfd, &filename, &stat, &flags);\
           #endif
           }' fs/stat.c
- 
-          echo "=== Verify patches ==="
-          grep -l "ksu_handle" fs/exec.c fs/open.c fs/read_write.c fs/stat.c
 
       # =========================================================
-      # 2b. FIX GCC FLAGS + LTO
+      # FIX TẤT CẢ LỖI GCC
       # =========================================================
-      - name: Fix GCC flags for kernel 4.4
+      - name: Fix all GCC 13/14 compatibility issues
         working-directory: ./kernel
         run: |
-          # Sửa cờ -implicit-function-declaration
+          # 1. Sửa cờ -implicit-function-declaration (GCC mới dùng -W...)
           sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' Makefile
           find . -name "Makefile*" -exec sed -i 's/-implicit-function-declaration/-Wimplicit-function-declaration/g' {} + 2>/dev/null || true
 
-          # Xóa cờ LTO của Clang (GCC không hiểu -flto=thin)
-          sed -i 's/-flto=thin//g' Makefile
-          sed -i 's/-flto=full//g' Makefile
-          sed -i 's/-flto=auto//g' Makefile
+          # 2. Xóa cờ LTO của Clang (GCC không hiểu -flto=thin)
+          sed -i 's/-flto=thin//g; s/-flto=full//g; s/-flto=auto//g' Makefile
           find . -name "Makefile*" -exec sed -i 's/-flto=thin//g' {} + 2>/dev/null || true
 
-          # Tắt -Werror
-          sed -i 's/-Werror//g' Makefile
-          sed -i 's/-Werror//g' scripts/Makefile.host 2>/dev/null || true
-          if ! grep -q "HOSTCFLAGS += -Wno-error" Makefile; then
-            echo 'HOSTCFLAGS += -Wno-error' >> Makefile
-          fi
+          # 3. Tắt -Werror để tránh GCC mới coi warning là lỗi
+          sed -i 's/-Werror//g' Makefile scripts/Makefile.host 2>/dev/null || true
+          echo 'HOSTCFLAGS += -Wno-error' >> Makefile
 
-          echo "=== Verify flags ==="
-          grep -n "implicit-function" Makefile | head -5 || true
-          grep -rn "flto" Makefile | head -10 || true
+          # 4. Sửa lỗi "section attribute cannot be specified for local variables"
+          #    (GCC 13+ không cho phép __read_mostly trên biến local)
+          sed -i 's/extern __read_mostly unsigned long zero_pfn;/extern unsigned long zero_pfn;/' include/asm-generic/pgtable.h
 
-      # =========================================================
-      # 3. ENV (GCC)
-      # =========================================================
+          # 5. Ép chuẩn C11 (tránh GCC 13+ mặc định C23 làm bool/true/false thành keyword)
+          #    Đây là nguyên nhân gây lỗi "bool redefined" hoặc "cannot use keyword 'false'"
+          echo 'KBUILD_CFLAGS += -std=gnu11' >> Makefile
+
+          echo "=== Verify fixes ==="
+          grep -n "implicit-function" Makefile | head -3 || true
+          grep -n "flto" Makefile | head -3 || true
+          grep -n "zero_pfn" include/asm-generic/pgtable.h | head -3 || true
+          grep -n "gnu11" Makefile | tail -3 || true
+
       - name: Set environment (GCC)
         run: |
           {
@@ -151,9 +135,6 @@ jobs:
             echo "ARCH=arm64"
           } >> $GITHUB_ENV
 
-      # =========================================================
-      # 4. BUILD
-      # =========================================================
       - name: Configure & Build kernel (GCC)
         working-directory: ./kernel
         run: |
@@ -176,7 +157,7 @@ jobs:
 
           make O=out olddefconfig
 
-          echo "=== Verify config after olddefconfig ==="
+          echo "=== Verify config ==="
           grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_CC_STACKPROTECTOR|CONFIG_LTO|CONFIG_LOCALVERSION|CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE" out/.config || true
 
           make -j$(nproc) O=out \
@@ -191,16 +172,11 @@ jobs:
             CROSS_COMPILE=aarch64-linux-gnu- \
             2>&1 | tee build.log
 
-      # =========================================================
-      # 5. PACKAGE & UPLOAD
-      # =========================================================
-      - name: Show kernel version & artifacts
+      - name: Show artifacts
         if: always()
         working-directory: ./kernel
         run: |
           [ -f out/include/config/kernel.release ] && echo "kernel.release: $(cat out/include/config/kernel.release)" || true
-          [ -f out/arch/arm64/boot/Image ] && strings out/arch/arm64/boot/Image 2>/dev/null | grep -m1 "Haubai" || true
-          echo "=== Boot artifacts ==="
           ls -la out/arch/arm64/boot/ || true
 
       - name: Upload build log
@@ -211,20 +187,13 @@ jobs:
           path: kernel/build.log
           if-no-files-found: warn
 
-      - name: Package flashable zip
+      - name: Package zip
         if: success()
         run: |
           cp -r kernel/kernel_zip/anykernel ak && cd ak
-          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
-            echo "Using Image.gz-dtb (DTB appended)"
-          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
-            cp ../kernel/out/arch/arm64/boot/Image.gz .
-            echo "::warning::Image.gz-dtb not found, using Image.gz"
-          else
-            cp ../kernel/out/arch/arm64/boot/Image .
-            echo "::warning::Image.gz-dtb not found, using Image"
-          fi
+          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
+          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then cp ../kernel/out/arch/arm64/boot/Image.gz .
+          else cp ../kernel/out/arch/arm64/boot/Image .; fi
           zip -r9 ../HaubaiKernel_${{ matrix.defconfig }}.zip *
 
       - name: Upload zip
